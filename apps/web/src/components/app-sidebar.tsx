@@ -2,8 +2,7 @@
 
 import {
   BarChart3,
-  Check,
-  ChevronUp,
+  ChevronsUpDown,
   Clock,
   Key,
   LayoutDashboard,
@@ -21,7 +20,14 @@ import { useTheme } from "next-themes";
 import Image from "next/image";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { useEffect, useRef, useState } from "react";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { cn } from "@/lib/utils";
 
 const navItems = [
@@ -38,20 +44,6 @@ export function AppSidebar() {
   const { signOut } = useClerk();
   const { user } = useUser();
   const { theme, setTheme } = useTheme();
-  const [menuOpen, setMenuOpen] = useState(false);
-  const menuRef = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    function handleClickOutside(e: MouseEvent) {
-      if (menuRef.current && !menuRef.current.contains(e.target as Node)) {
-        setMenuOpen(false);
-      }
-    }
-    if (menuOpen) {
-      document.addEventListener("mousedown", handleClickOutside);
-      return () => document.removeEventListener("mousedown", handleClickOutside);
-    }
-  }, [menuOpen]);
 
   return (
     <aside className="w-56 shrink-0 border-r border-sidebar-border bg-sidebar text-sidebar-foreground flex flex-col h-screen sticky top-0">
@@ -85,32 +77,66 @@ export function AppSidebar() {
         })}
       </nav>
 
-      {/* User footer with popup menu */}
-      <div className="relative border-t border-sidebar-border" ref={menuRef}>
-        {/* Popup menu */}
-        {menuOpen && (
-          <div className="absolute bottom-full left-2 right-2 mb-1 bg-popover border border-border rounded-lg shadow-lg py-1 z-50 animate-in fade-in slide-in-from-bottom-2 duration-200">
-            <Link
-              href="/settings"
-              onClick={() => setMenuOpen(false)}
-              className="flex items-center gap-2.5 px-3 py-2 text-sm text-popover-foreground hover:bg-accent transition-colors"
+      {/* User footer with dropdown menu */}
+      <div className="border-t border-sidebar-border">
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <button
+              type="button"
+              className="w-full flex items-center gap-2.5 px-4 py-3 hover:bg-sidebar-accent transition-colors outline-none"
             >
-              <Settings className="size-4" />
-              Settings
-            </Link>
-            <Link
-              href="/settings"
-              onClick={() => setMenuOpen(false)}
-              className="flex items-center gap-2.5 px-3 py-2 text-sm text-popover-foreground hover:bg-accent transition-colors"
-            >
-              <User className="size-4" />
-              Profile
-            </Link>
-
-            <div className="h-px bg-border my-1" />
-
+              {user?.imageUrl ? (
+                <Image
+                  src={user.imageUrl}
+                  alt=""
+                  width={28}
+                  height={28}
+                  className="rounded-full shrink-0"
+                />
+              ) : (
+                <div className="size-7 rounded-full bg-primary text-primary-foreground flex items-center justify-center text-xs font-medium shrink-0">
+                  {user?.fullName?.[0] ?? "U"}
+                </div>
+              )}
+              <div className="min-w-0 flex-1 text-left">
+                <div className="text-sm font-medium truncate">
+                  {user?.fullName}
+                </div>
+              </div>
+              <ChevronsUpDown className="size-4 text-muted-foreground shrink-0" />
+            </button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent
+            side="top"
+            align="start"
+            className="w-[calc(var(--radix-dropdown-menu-trigger-width))]"
+          >
+            <DropdownMenuLabel className="font-normal">
+              <div className="flex flex-col gap-1">
+                <p className="text-sm font-medium leading-none">
+                  {user?.fullName}
+                </p>
+                <p className="text-xs text-muted-foreground leading-none">
+                  {user?.primaryEmailAddress?.emailAddress}
+                </p>
+              </div>
+            </DropdownMenuLabel>
+            <DropdownMenuSeparator />
+            <DropdownMenuItem asChild>
+              <Link href="/settings">
+                <Settings className="mr-2 size-4" />
+                Settings
+              </Link>
+            </DropdownMenuItem>
+            <DropdownMenuItem asChild>
+              <Link href="/settings">
+                <User className="mr-2 size-4" />
+                Profile
+              </Link>
+            </DropdownMenuItem>
+            <DropdownMenuSeparator />
             {/* Theme switcher */}
-            <div className="flex items-center justify-between px-3 py-2">
+            <div className="flex items-center justify-between px-2 py-1.5">
               <span className="text-xs text-muted-foreground">Theme</span>
               <div className="flex items-center gap-0.5 rounded-lg bg-muted/50 p-0.5">
                 {(
@@ -124,7 +150,10 @@ export function AppSidebar() {
                     key={opt.value}
                     type="button"
                     title={opt.label}
-                    onClick={() => setTheme(opt.value)}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setTheme(opt.value);
+                    }}
                     className={cn(
                       "rounded-md p-1.5 transition-colors",
                       theme === opt.value
@@ -137,54 +166,13 @@ export function AppSidebar() {
                 ))}
               </div>
             </div>
-
-            <div className="h-px bg-border my-1" />
-
-            <button
-              type="button"
-              onClick={() => signOut({ redirectUrl: "/sign-in" })}
-              className="w-full flex items-center gap-2.5 px-3 py-2 text-sm text-popover-foreground hover:bg-accent transition-colors"
-            >
-              <LogOut className="size-4" />
+            <DropdownMenuSeparator />
+            <DropdownMenuItem onClick={() => signOut({ redirectUrl: "/sign-in" })}>
+              <LogOut className="mr-2 size-4" />
               Sign out
-            </button>
-          </div>
-        )}
-
-        {/* User button */}
-        <button
-          type="button"
-          onClick={() => setMenuOpen(!menuOpen)}
-          className="w-full flex items-center gap-2.5 px-4 py-3 hover:bg-sidebar-accent transition-colors"
-        >
-          {user?.imageUrl ? (
-            <Image
-              src={user.imageUrl}
-              alt=""
-              width={28}
-              height={28}
-              className="rounded-full shrink-0"
-            />
-          ) : (
-            <div className="size-7 rounded-full bg-primary text-primary-foreground flex items-center justify-center text-xs font-medium shrink-0">
-              {user?.fullName?.[0] ?? "U"}
-            </div>
-          )}
-          <div className="min-w-0 flex-1 text-left">
-            <div className="text-sm font-medium truncate">
-              {user?.fullName}
-            </div>
-            <div className="text-xs text-muted-foreground truncate">
-              {user?.primaryEmailAddress?.emailAddress}
-            </div>
-          </div>
-          <ChevronUp
-            className={cn(
-              "size-4 text-muted-foreground shrink-0 transition-transform",
-              menuOpen && "rotate-180",
-            )}
-          />
-        </button>
+            </DropdownMenuItem>
+          </DropdownMenuContent>
+        </DropdownMenu>
       </div>
     </aside>
   );
