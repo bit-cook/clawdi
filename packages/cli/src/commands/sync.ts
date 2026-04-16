@@ -37,11 +37,6 @@ async function pickModules(
 	available: typeof UP_MODULES,
 	direction: "upload" | "download",
 ): Promise<string[] | null> {
-	if (available.length === 1) {
-		return [available[0].value];
-	}
-
-	// Multiple modules — multiselect then confirm
 	const selected = await p.multiselect({
 		message: `Select modules to ${direction} (space to toggle, enter to confirm)`,
 		options: available,
