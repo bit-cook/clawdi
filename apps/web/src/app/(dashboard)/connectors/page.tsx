@@ -2,14 +2,16 @@
 
 import { useAuth } from "@clerk/nextjs";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { ExternalLink, Link2, Link2Off, Search } from "lucide-react";
-import { useState } from "react";
+import { Check, Link2Off, Search, X } from "lucide-react";
+import { useDeferredValue, useMemo, useState } from "react";
 import { apiFetch } from "@/lib/api";
+import { cn } from "@/lib/utils";
 
 export default function ConnectorsPage() {
   const { getToken } = useAuth();
   const queryClient = useQueryClient();
-  const [search, setSearch] = useState("");
+  const [query, setQuery] = useState("");
+  const deferredQuery = useDeferredValue(query);
 
   const { data: connections } = useQuery({
     queryKey: ["connections"],
@@ -20,13 +22,12 @@ export default function ConnectorsPage() {
     },
   });
 
-  const { data: availableApps, isLoading: appsLoading } = useQuery({
-    queryKey: ["available-apps", search],
+  const { data: availableApps, isLoading } = useQuery({
+    queryKey: ["available-apps"],
     queryFn: async () => {
       const token = await getToken();
       if (!token) throw new Error("Not authenticated");
-      const params = search ? `?search=${encodeURIComponent(search)}` : "";
-      return apiFetch<any[]>(`/api/connectors/available${params}`, token);
+      return apiFetch<any[]>("/api/connectors/available", token);
     },
   });
 
@@ -55,109 +56,160 @@ export default function ConnectorsPage() {
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ["connections"] }),
   });
 
-  const connectedAppNames = new Set(connections?.map((c: any) => c.app_name) ?? []);
+  const connectedNames = useMemo(
+    () => new Set(connections?.map((c: any) => c.app_name) ?? []),
+    [connections],
+  );
+
+  const filtered = useMemo(() => {
+    if (!availableApps) return [];
+    let items = [...availableApps];
+    if (deferredQuery) {
+      const q = deferredQuery.toLowerCase();
+      items = items.filter(
+        (a) =>
+          a.name?.toLowerCase().includes(q) ||
+          a.display_name?.toLowerCase().includes(q) ||
+          a.description?.toLowerCase().includes(q),
+      );
+    }
+    // Connected first
+    items.sort((a, b) => {
+      const ac = connectedNames.has(a.name) ? 1 : 0;
+      const bc = connectedNames.has(b.name) ? 1 : 0;
+      return bc - ac;
+    });
+    return items;
+  }, [availableApps, deferredQuery, connectedNames]);
+
+  const connectedCount = connections?.length ?? 0;
 
   return (
-    <div className="max-w-5xl space-y-8">
-      <h1 className="text-2xl font-bold">Connectors</h1>
-      <p className="text-sm text-muted-foreground">
-        Connect third-party services. Once connected, tools are available in any agent via MCP.
-      </p>
-
-      {/* My Connections */}
-      {connections && connections.length > 0 && (
-        <section className="space-y-3">
-          <h2 className="text-sm font-medium text-muted-foreground">My Connections</h2>
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
-            {connections.map((c: any) => (
-              <div
-                key={c.id}
-                className="bg-card border border-border rounded-lg p-4 flex items-center justify-between"
-              >
-                <div className="flex items-center gap-3">
-                  <Link2 className="size-5 text-primary" />
-                  <div>
-                    <div className="text-sm font-medium">{c.app_name}</div>
-                    <div className="text-xs text-muted-foreground">{c.status}</div>
-                  </div>
-                </div>
-                <button
-                  type="button"
-                  onClick={() => disconnectApp.mutate(c.id)}
-                  className="p-1.5 text-muted-foreground hover:text-destructive hover:bg-muted rounded-md transition-colors"
-                  title="Disconnect"
-                >
-                  <Link2Off className="size-4" />
-                </button>
-              </div>
-            ))}
-          </div>
-        </section>
-      )}
-
-      {/* Available Apps */}
-      <section className="space-y-3">
-        <h2 className="text-sm font-medium text-muted-foreground">Available Apps</h2>
-
-        <div className="relative">
-          <Search className="absolute left-3 top-1/2 -translate-y-1/2 size-4 text-muted-foreground" />
-          <input
-            type="text"
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            placeholder="Search apps..."
-            className="w-full border border-input bg-background rounded-lg pl-10 pr-4 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
-          />
+    <div className="max-w-5xl space-y-6">
+      <div className="flex items-center justify-between">
+        <div>
+          <h1 className="text-2xl font-bold">Connectors</h1>
+          <p className="text-sm text-muted-foreground mt-1">
+            Connect third-party services. Tools become available in any agent via MCP.
+          </p>
         </div>
+        <div className="flex items-center gap-2">
+          {availableApps && (
+            <span className="bg-muted px-3 py-1 rounded-full text-xs font-medium">
+              {availableApps.length} available
+            </span>
+          )}
+          {connectedCount > 0 && (
+            <span className="bg-primary/10 px-3 py-1 rounded-full text-xs font-semibold text-primary">
+              {connectedCount} connected
+            </span>
+          )}
+        </div>
+      </div>
 
-        {appsLoading ? (
-          <div className="text-muted-foreground text-sm">Loading apps...</div>
-        ) : availableApps?.length ? (
-          <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3">
-            {availableApps.map((app: any) => {
-              const isConnected = connectedAppNames.has(app.name);
-              return (
-                <div
-                  key={app.name}
-                  className="bg-card border border-border rounded-lg p-3 flex flex-col items-center gap-2 text-center"
-                >
+      {/* Search */}
+      <div className="relative">
+        <Search className="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
+        <input
+          type="text"
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          placeholder="Search connectors..."
+          className="w-full border border-input bg-background rounded-lg pl-9 pr-9 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+        />
+        {query && (
+          <button
+            type="button"
+            onClick={() => setQuery("")}
+            className="absolute right-2 top-1/2 -translate-y-1/2 size-6 flex items-center justify-center rounded-md text-muted-foreground hover:bg-muted transition-colors"
+          >
+            <X className="size-4" />
+          </button>
+        )}
+      </div>
+
+      {/* Grid */}
+      {isLoading ? (
+        <div className="rounded-lg border border-dashed bg-card p-6 text-center text-sm text-muted-foreground">
+          Loading connectors...
+        </div>
+      ) : filtered.length === 0 ? (
+        <div className="rounded-lg border border-dashed bg-card p-6 text-center text-sm text-muted-foreground">
+          {query ? `No connectors matching "${query}"` : "No connectors available. Configure COMPOSIO_API_KEY."}
+        </div>
+      ) : (
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
+          {filtered.map((app: any) => {
+            const isConnected = connectedNames.has(app.name);
+            const connection = connections?.find((c: any) => c.app_name === app.name);
+            return (
+              <div
+                key={app.name}
+                className={cn(
+                  "group flex h-20 items-center gap-4 rounded-xl border bg-card px-4 transition-all hover:border-foreground/15 hover:bg-accent/40",
+                  isConnected && "border-primary/20",
+                )}
+              >
+                {/* Icon */}
+                <div className="flex size-11 shrink-0 items-center justify-center rounded-xl bg-muted">
                   {app.logo ? (
                     <img
                       src={app.logo}
                       alt={app.display_name}
-                      className="size-8 rounded"
+                      className="size-6 rounded"
                       onError={(e) => {
-                        (e.target as HTMLImageElement).style.display = "none";
+                        const target = e.target as HTMLImageElement;
+                        target.style.display = "none";
+                        target.parentElement!.textContent = app.display_name?.[0] ?? "?";
                       }}
                     />
                   ) : (
-                    <div className="size-8 rounded bg-muted flex items-center justify-center text-xs font-medium">
+                    <span className="text-lg font-medium text-muted-foreground">
                       {app.display_name?.[0] ?? "?"}
-                    </div>
-                  )}
-                  <span className="text-xs font-medium truncate w-full">{app.display_name}</span>
-                  {isConnected ? (
-                    <span className="text-xs text-primary">Connected</span>
-                  ) : (
-                    <button
-                      type="button"
-                      onClick={() => connectApp.mutate(app.name)}
-                      disabled={connectApp.isPending}
-                      className="text-xs px-3 py-1 bg-primary text-primary-foreground rounded-md hover:opacity-90 disabled:opacity-50 transition-opacity"
-                    >
-                      Connect
-                    </button>
+                    </span>
                   )}
                 </div>
-              );
-            })}
-          </div>
-        ) : (
-          <div className="text-muted-foreground text-sm">
-            {search ? `No apps matching "${search}"` : "No apps available. Configure COMPOSIO_API_KEY."}
-          </div>
-        )}
-      </section>
+
+                {/* Text */}
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-center gap-2">
+                    <span className="truncate text-sm font-semibold">{app.display_name}</span>
+                  </div>
+                  {app.description && (
+                    <p className="mt-0.5 line-clamp-2 text-xs text-muted-foreground">
+                      {app.description}
+                    </p>
+                  )}
+                </div>
+
+                {/* Action */}
+                {isConnected ? (
+                  <div className="flex items-center gap-1.5 shrink-0">
+                    <Check className="size-4 text-green-600 dark:text-green-400" />
+                    <button
+                      type="button"
+                      onClick={() => connection && disconnectApp.mutate(connection.id)}
+                      className="p-1 text-muted-foreground hover:text-destructive rounded-md opacity-0 group-hover:opacity-100 transition-all"
+                      title="Disconnect"
+                    >
+                      <Link2Off className="size-3.5" />
+                    </button>
+                  </div>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => connectApp.mutate(app.name)}
+                    disabled={connectApp.isPending}
+                    className="shrink-0 rounded-lg bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground hover:opacity-90 disabled:opacity-50 transition-opacity"
+                  >
+                    Connect
+                  </button>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
     </div>
   );
 }
