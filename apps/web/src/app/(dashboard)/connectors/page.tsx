@@ -2,7 +2,7 @@
 
 import { useAuth } from "@clerk/nextjs";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { Check, ChevronLeft, ChevronRight, Search, X } from "lucide-react";
+import { Check, ChevronLeft, ChevronRight, Plug, Search, X } from "lucide-react";
 import { useDeferredValue, useMemo, useState } from "react";
 import { apiFetch } from "@/lib/api";
 import { cn } from "@/lib/utils";
@@ -154,96 +154,71 @@ export default function ConnectorsPage() {
         </div>
       ) : (
         <>
-          <div className="rounded-xl border border-border overflow-hidden bg-card">
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3">
-              {paged.map((app: any, idx: number) => {
-                const isConnected = connectedNames.has(app.name);
-                const connection = connections?.find(
-                  (c: any) => c.app_name === app.name,
-                );
-                const col = idx % 3;
-                const row = Math.floor(idx / 3);
-                return (
-                  <div
-                    key={app.name}
-                    className={cn(
-                      "group flex items-start gap-3 px-4 py-4 transition-colors hover:bg-accent/30",
-                      col < 2 && "lg:border-r border-border",
-                      row < Math.ceil(paged.length / 3) - 1 && "border-b border-border",
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
+            {paged.map((app: any) => {
+              const isConnected = connectedNames.has(app.name);
+              const connection = connections?.find(
+                (c: any) => c.app_name === app.name,
+              );
+              return (
+                <div
+                  key={app.name}
+                  className="group flex h-20 items-center gap-4 rounded-xl border bg-card px-4 transition-all hover:border-foreground/15 hover:bg-accent/40"
+                >
+                  {/* Icon */}
+                  <div className="flex size-11 shrink-0 items-center justify-center rounded-xl bg-muted">
+                    {app.logo ? (
+                      <img
+                        src={app.logo}
+                        alt=""
+                        className="size-6 rounded"
+                        onError={(e) => {
+                          const t = e.target as HTMLImageElement;
+                          t.style.display = "none";
+                          const fb = document.createElement("span");
+                          fb.className = "text-lg";
+                          fb.textContent = app.display_name?.[0] ?? "?";
+                          t.parentElement!.appendChild(fb);
+                        }}
+                      />
+                    ) : (
+                      <span className="text-lg">
+                        {app.display_name?.[0] ?? "?"}
+                      </span>
                     )}
-                  >
-                    {/* Logo */}
-                    <div className="shrink-0 mt-0.5">
-                      {app.logo ? (
-                        <img
-                          src={app.logo}
-                          alt=""
-                          className="size-8 rounded"
-                          onError={(e) => {
-                            const t = e.target as HTMLImageElement;
-                            t.style.display = "none";
-                            const fallback = document.createElement("div");
-                            fallback.className =
-                              "size-8 rounded bg-muted flex items-center justify-center text-xs font-semibold text-muted-foreground";
-                            fallback.textContent =
-                              app.display_name?.[0] ?? "?";
-                            t.parentElement!.appendChild(fallback);
-                          }}
-                        />
-                      ) : (
-                        <div className="size-8 rounded bg-muted flex items-center justify-center text-xs font-semibold text-muted-foreground">
-                          {app.display_name?.[0] ?? "?"}
-                        </div>
-                      )}
-                    </div>
-
-                    {/* Content */}
-                    <div className="min-w-0 flex-1">
-                      <div className="flex items-center gap-2">
-                        <span className="text-sm font-semibold truncate">
-                          {app.display_name}
-                        </span>
-                        {isConnected && (
-                          <span className="inline-flex items-center gap-0.5 text-[10px] text-green-600 dark:text-green-400 font-medium">
-                            <Check className="size-2.5" />
-                            Connected
-                          </span>
-                        )}
-                      </div>
-                      {app.description && (
-                        <p className="mt-0.5 text-xs text-muted-foreground line-clamp-2 leading-relaxed">
-                          {app.description}
-                        </p>
-                      )}
-                    </div>
-
-                    {/* Action */}
-                    <div className="shrink-0 pt-0.5">
-                      {isConnected ? (
-                        <button
-                          type="button"
-                          onClick={() =>
-                            connection && disconnectApp.mutate(connection.id)
-                          }
-                          className="text-[11px] text-muted-foreground hover:text-destructive transition-colors opacity-0 group-hover:opacity-100"
-                        >
-                          Disconnect
-                        </button>
-                      ) : (
-                        <button
-                          type="button"
-                          onClick={() => connectApp.mutate(app.name)}
-                          disabled={connectApp.isPending}
-                          className="rounded-lg bg-primary px-3 py-1 text-[11px] font-medium text-primary-foreground hover:opacity-90 disabled:opacity-50 transition-opacity"
-                        >
-                          Connect
-                        </button>
-                      )}
-                    </div>
                   </div>
-                );
-              })}
-            </div>
+
+                  {/* Text */}
+                  <div className="min-w-0 flex-1">
+                    <div className="flex items-center gap-2">
+                      <span className="truncate text-sm font-semibold">
+                        {app.display_name}
+                      </span>
+                    </div>
+                    {app.description && (
+                      <p className="mt-0.5 line-clamp-2 text-xs text-muted-foreground">
+                        {app.description}
+                      </p>
+                    )}
+                  </div>
+
+                  {/* Status / Action */}
+                  {isConnected ? (
+                    <Check className="size-4 shrink-0 text-green-600 dark:text-green-400" />
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={() => connectApp.mutate(app.name)}
+                      disabled={connectApp.isPending}
+                      className="shrink-0 flex items-center gap-1.5 rounded-lg bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground shadow-none hover:opacity-90 disabled:opacity-50 transition-opacity"
+                    >
+                      <Plug className="size-3.5" />
+                      Connect
+                    </button>
+                  )}
+                </div>
+              );
+            })}
           </div>
 
           {/* Pagination */}
