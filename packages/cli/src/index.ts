@@ -48,6 +48,8 @@ syncCmd
 	.description("Push local data to cloud")
 	.option("--modules <modules>", "Comma-separated: sessions,skills,memories")
 	.option("--since <date>", "Only sync data after this date")
+	.option("--project <path>", "Sync a specific project (default: current directory)")
+	.option("--all", "Sync all projects")
 	.option("--dry-run", "Preview without uploading")
 	.action(async (opts) => {
 		const { syncUp } = await import("./commands/sync.js");

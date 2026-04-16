@@ -23,7 +23,7 @@ function saveSyncState(state: SyncState) {
 	writeFileSync(path, JSON.stringify(state, null, 2) + "\n", { mode: 0o600 });
 }
 
-export async function syncUp(opts: { modules?: string; since?: string; dryRun?: boolean }) {
+export async function syncUp(opts: { modules?: string; since?: string; project?: string; all?: boolean; dryRun?: boolean }) {
 	if (!opts.dryRun && !isLoggedIn()) {
 		console.log(chalk.red("Not logged in. Run `clawdi login` first."));
 		return;
@@ -55,7 +55,9 @@ export async function syncUp(opts: { modules?: string; since?: string; dryRun?: 
 				? new Date(syncState.sessions.lastSyncedAt)
 				: undefined;
 
-		const sessions = await adapter.collectSessions(since);
+		// Default to cwd, --all for everything, --project for specific path
+		const projectFilter = opts.all ? undefined : (opts.project ?? process.cwd());
+		const sessions = await adapter.collectSessions(since, projectFilter);
 
 		if (sessions.length === 0) {
 			console.log(chalk.gray("  No new sessions to sync."));

@@ -40,13 +40,28 @@ export class ClaudeCodeAdapter implements AgentAdapter {
 		}
 	}
 
-	async collectSessions(since?: Date): Promise<RawSession[]> {
+	/**
+	 * Convert absolute path to Claude Code project dir name.
+	 * /Users/paco/workspace/clawdi → -Users-paco-workspace-clawdi
+	 */
+	private pathToProjectDir(absPath: string): string {
+		return absPath.replace(/\//g, "-");
+	}
+
+	async collectSessions(since?: Date, projectFilter?: string): Promise<RawSession[]> {
 		if (!existsSync(PROJECTS_DIR)) return [];
 
 		const sessions: RawSession[] = [];
-		const projectDirs = readdirSync(PROJECTS_DIR, { withFileTypes: true }).filter((d) =>
+		let projectDirs = readdirSync(PROJECTS_DIR, { withFileTypes: true }).filter((d) =>
 			d.isDirectory(),
 		);
+
+		if (projectFilter) {
+			const { resolve } = await import("node:path");
+			const absPath = resolve(projectFilter);
+			const targetDir = this.pathToProjectDir(absPath);
+			projectDirs = projectDirs.filter((d) => d.name === targetDir);
+		}
 
 		for (const projectDir of projectDirs) {
 			const projectPath = join(PROJECTS_DIR, projectDir.name);

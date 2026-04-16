@@ -28,7 +28,7 @@ export interface AgentAdapter {
 	detect(): Promise<boolean>;
 	getVersion(): Promise<string | null>;
 
-	collectSessions(since?: Date): Promise<RawSession[]>;
+	collectSessions(since?: Date, projectFilter?: string): Promise<RawSession[]>;
 	collectSkills(): Promise<RawSkill[]>;
 
 	writeSkill(key: string, content: string): Promise<void>;
