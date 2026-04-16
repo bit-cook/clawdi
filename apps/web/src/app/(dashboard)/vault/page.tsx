@@ -3,8 +3,6 @@
 import { useAuth } from "@clerk/nextjs";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import {
-  Eye,
-  EyeOff,
   Key,
   Loader2,
   Plus,
@@ -57,15 +55,22 @@ export default function VaultPage() {
   return (
     <div className="space-y-5">
       {/* Header */}
-      <div>
-        <h1 className="text-2xl font-bold">Vault</h1>
-        <p className="text-sm text-muted-foreground mt-1">
-          Encrypted secrets synced to your agents via{" "}
-          <code className="bg-muted px-1.5 py-0.5 rounded text-xs">
-            clawdi run
-          </code>
-          . Values are AES-256-GCM encrypted at rest.
-        </p>
+      <div className="flex items-start justify-between">
+        <div>
+          <h1 className="text-2xl font-bold">Vault</h1>
+          <p className="text-sm text-muted-foreground mt-1">
+            Encrypted secrets synced to your agents via{" "}
+            <code className="bg-muted px-1.5 py-0.5 rounded text-xs">
+              clawdi run
+            </code>
+            . Values are AES-256-GCM encrypted at rest.
+          </p>
+        </div>
+        {vaults && (
+          <span className="rounded-full bg-muted px-3 py-1 text-xs font-medium text-muted-foreground">
+            {vaults.length} vault{vaults.length === 1 ? "" : "s"}
+          </span>
+        )}
       </div>
 
       {/* Create vault */}
@@ -79,7 +84,7 @@ export default function VaultPage() {
             )
           }
           placeholder="New vault name (e.g. ai-keys, prod)"
-          className="flex-1 border border-input bg-background rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+          className="flex-1 border border-input bg-background rounded-xl px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
           onKeyDown={(e) => {
             if (e.key === "Enter" && newVaultSlug)
               createVault.mutate(newVaultSlug);
@@ -108,7 +113,7 @@ export default function VaultPage() {
           ))}
         </div>
       ) : vaults?.length ? (
-        <div className="space-y-4">
+        <div className="space-y-3">
           {vaults.map((v: any) => (
             <VaultCard
               key={v.id}
@@ -144,7 +149,6 @@ function VaultCard({
   const [adding, setAdding] = useState(false);
   const [newKey, setNewKey] = useState("");
   const [newValue, setNewValue] = useState("");
-  const [showValues, setShowValues] = useState<Set<string>>(new Set());
 
   const { data: items } = useQuery({
     queryKey: ["vault-items", vault.slug],
@@ -209,17 +213,8 @@ function VaultCard({
       )
     : [];
 
-  const toggleShow = (key: string) => {
-    setShowValues((prev) => {
-      const next = new Set(prev);
-      if (next.has(key)) next.delete(key);
-      else next.add(key);
-      return next;
-    });
-  };
-
   return (
-    <div className="rounded-lg border bg-card">
+    <div className="group/vault rounded-lg border bg-card">
       {/* Header */}
       <div className="flex items-center justify-between px-4 py-3 border-b">
         <div className="flex items-center gap-2">
@@ -242,7 +237,7 @@ function VaultCard({
             type="button"
             onClick={onDelete}
             disabled={isDeleting}
-            className="p-1.5 text-muted-foreground hover:text-destructive hover:bg-muted rounded-md transition-colors disabled:opacity-50"
+            className="p-1.5 text-muted-foreground opacity-0 group-hover/vault:opacity-100 hover:text-destructive hover:bg-muted rounded-md transition-all disabled:opacity-50"
           >
             <Trash2 className="size-3.5" />
           </button>
@@ -313,32 +308,20 @@ function VaultCard({
             <div
               key={f.key}
               className={cn(
-                "flex items-center justify-between px-4 py-2.5",
+                "group flex items-center justify-between px-4 py-2.5",
                 i > 0 && "border-t",
               )}
             >
               <span className="font-mono text-xs">{f.key}</span>
               <div className="flex items-center gap-1">
                 <span className="text-xs text-muted-foreground mr-1">
-                  {showValues.has(f.key) ? "(encrypted)" : "••••••••"}
+                  ••••••••
                 </span>
-                <button
-                  type="button"
-                  onClick={() => toggleShow(f.key)}
-                  className="p-1 text-muted-foreground hover:text-foreground rounded transition-colors"
-                  title={showValues.has(f.key) ? "Hide" : "Show hint"}
-                >
-                  {showValues.has(f.key) ? (
-                    <EyeOff className="size-3.5" />
-                  ) : (
-                    <Eye className="size-3.5" />
-                  )}
-                </button>
                 <button
                   type="button"
                   onClick={() => deleteItem.mutate(f.name)}
                   disabled={deleteItem.isPending}
-                  className="p-1 text-muted-foreground hover:text-destructive rounded transition-colors disabled:opacity-50"
+                  className="p-1 text-muted-foreground opacity-0 group-hover:opacity-100 hover:text-destructive rounded transition-all disabled:opacity-50"
                 >
                   <Trash2 className="size-3.5" />
                 </button>
