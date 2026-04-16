@@ -13,6 +13,7 @@ import {
 } from "lucide-react";
 import Link from "next/link";
 import { ContributionGraph } from "@/components/dashboard/contribution-graph";
+import { OnboardingCard } from "@/components/dashboard/onboarding-card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { apiFetch } from "@/lib/api";
 import { cn } from "@/lib/utils";
@@ -65,9 +66,14 @@ export default function DashboardPage() {
     },
   });
 
+  const isNewUser = stats && stats.total_sessions === 0;
+
   return (
     <div className="space-y-6">
       <h1 className="text-2xl font-bold">Overview</h1>
+
+      {/* Onboarding for new users */}
+      {!statsLoading && isNewUser && <OnboardingCard />}
 
       {/* Module stats */}
       {statsLoading ? (
