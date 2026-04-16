@@ -78,8 +78,13 @@ async def create_connect_link(user_id: str, app_name: str) -> dict:
         if isinstance(integrations, list) and integrations:
             integration_id = str(integrations[0].id)
         else:
-            # Create a new integration
-            integration = client.integrations.create(app_name=app_name, use_composio_auth=True)
+            # Need app_id to create integration
+            app_info = client.apps.get(name=app_name)
+            if isinstance(app_info, list):
+                app_info = app_info[0] if app_info else None
+            if not app_info:
+                raise ValueError(f"App '{app_name}' not found")
+            integration = client.integrations.create(app_id=app_info.appId, use_composio_auth=True)
             integration_id = str(integration.id)
 
         result = client.connected_accounts.initiate(
