@@ -6,10 +6,10 @@ import { ClaudeCodeAdapter } from "../adapters/claude-code";
 import { ApiClient } from "../lib/api-client";
 import { getClawdiDir, isLoggedIn } from "../lib/config";
 
-function getCurrentEnvId(): string | null {
-	const path = join(getClawdiDir(), "current-env.json");
+function getEnvIdByAgent(agentType: string): string | null {
+	const path = join(getClawdiDir(), "environments", `${agentType}.json`);
 	if (!existsSync(path)) return null;
-	return JSON.parse(readFileSync(path, "utf-8")).environmentId;
+	return JSON.parse(readFileSync(path, "utf-8")).id;
 }
 
 function getSyncState(): SyncState {
@@ -29,7 +29,14 @@ export async function syncUp(opts: { modules?: string; since?: string; project?:
 		return;
 	}
 
-	const envId = getCurrentEnvId();
+	// Determine adapter
+	const adapter = new ClaudeCodeAdapter();
+	if (!(await adapter.detect())) {
+		console.log(chalk.red("Claude Code not detected on this machine."));
+		return;
+	}
+
+	const envId = getEnvIdByAgent(adapter.agentType);
 	if (!opts.dryRun && !envId) {
 		console.log(chalk.red("No environment registered. Run `clawdi setup` first."));
 		return;
@@ -38,13 +45,6 @@ export async function syncUp(opts: { modules?: string; since?: string; project?:
 	const modules = opts.modules?.split(",") ?? ["sessions"];
 	const syncState = getSyncState();
 	const api = opts.dryRun ? null : new ApiClient();
-
-	// Determine adapter from current env
-	const adapter = new ClaudeCodeAdapter();
-	if (!(await adapter.detect())) {
-		console.log(chalk.red("Claude Code not detected on this machine."));
-		return;
-	}
 
 	if (modules.includes("sessions")) {
 		console.log(chalk.cyan("Syncing sessions..."));
