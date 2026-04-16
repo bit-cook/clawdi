@@ -33,6 +33,34 @@ const DOWN_MODULES = [
 	{ value: "skills", label: "Skills", hint: "pull SKILL.md to agent directories" },
 ];
 
+async function pickModules(
+	available: typeof UP_MODULES,
+	direction: "upload" | "download",
+): Promise<string[] | null> {
+	if (available.length === 1) {
+		// Single module — just confirm
+		const ok = await p.confirm({
+			message: `${direction === "upload" ? "Upload" : "Download"} ${available[0].label.toLowerCase()}?`,
+		});
+		if (p.isCancel(ok) || !ok) return null;
+		return [available[0].value];
+	}
+
+	// Multiple modules — multiselect then confirm
+	const selected = await p.multiselect({
+		message: `Select modules to ${direction} (space to toggle, enter to confirm)`,
+		options: available,
+		initialValues: available.map((m) => m.value),
+	});
+	if (p.isCancel(selected) || selected.length === 0) return null;
+
+	const ok = await p.confirm({
+		message: `${direction === "upload" ? "Upload" : "Download"} ${selected.join(", ")}?`,
+	});
+	if (p.isCancel(ok) || !ok) return null;
+	return selected;
+}
+
 export async function syncUp(opts: {
 	modules?: string;
 	since?: string;
@@ -61,27 +89,12 @@ export async function syncUp(opts: {
 	if (opts.modules) {
 		modules = opts.modules.split(",");
 	} else {
-		const selected = await p.multiselect({
-			message: "Select modules to upload",
-			options: UP_MODULES,
-			initialValues: UP_MODULES.map((m) => m.value),
-		});
-		if (p.isCancel(selected)) {
+		const picked = await pickModules(UP_MODULES, "upload");
+		if (!picked) {
 			p.cancel("Cancelled.");
 			return;
 		}
-		modules = selected;
-
-		if (modules.length === 0) {
-			console.log(chalk.gray("No modules selected."));
-			return;
-		}
-
-		const ok = await p.confirm({ message: `Upload ${modules.join(", ")}?` });
-		if (p.isCancel(ok) || !ok) {
-			p.cancel("Cancelled.");
-			return;
-		}
+		modules = picked;
 	}
 
 	const syncState = getSyncState();
@@ -197,27 +210,12 @@ export async function syncDown(opts: { modules?: string; dryRun?: boolean }) {
 	if (opts.modules) {
 		modules = opts.modules.split(",");
 	} else {
-		const selected = await p.multiselect({
-			message: "Select modules to download",
-			options: DOWN_MODULES,
-			initialValues: DOWN_MODULES.map((m) => m.value),
-		});
-		if (p.isCancel(selected)) {
+		const picked = await pickModules(DOWN_MODULES, "download");
+		if (!picked) {
 			p.cancel("Cancelled.");
 			return;
 		}
-		modules = selected;
-
-		if (modules.length === 0) {
-			console.log(chalk.gray("No modules selected."));
-			return;
-		}
-
-		const ok = await p.confirm({ message: `Download ${modules.join(", ")}?` });
-		if (p.isCancel(ok) || !ok) {
-			p.cancel("Cancelled.");
-			return;
-		}
+		modules = picked;
 	}
 
 	if (modules.includes("skills")) {
