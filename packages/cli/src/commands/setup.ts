@@ -1,6 +1,7 @@
 import chalk from "chalk";
 import { createHash } from "node:crypto";
 import { hostname } from "node:os";
+import { createInterface } from "node:readline/promises";
 import { writeFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { AGENT_TYPES, AGENT_LABELS, type AgentType } from "@clawdi-cloud/shared/consts";
@@ -24,7 +25,6 @@ export async function setup(opts: { agent?: string }) {
 	const machineName = hostname();
 	const api = new ApiClient();
 
-	// If --agent specified, only register that one
 	if (opts.agent) {
 		if (!AGENT_TYPES.includes(opts.agent as AgentType)) {
 			console.log(chalk.red(`Unknown agent type: ${opts.agent}`));
@@ -35,7 +35,7 @@ export async function setup(opts: { agent?: string }) {
 		return;
 	}
 
-	// Auto-detect all installed agents
+	// Auto-detect
 	console.log(chalk.cyan("Detecting installed agents..."));
 	const detected: { adapter: AgentAdapter; version: string | null }[] = [];
 
@@ -43,9 +43,6 @@ export async function setup(opts: { agent?: string }) {
 		if (await adapter.detect()) {
 			const version = await adapter.getVersion();
 			detected.push({ adapter, version });
-			console.log(
-				chalk.green(`  ✓ ${AGENT_LABELS[adapter.agentType]}${version ? ` (${version})` : ""}`),
-			);
 		}
 	}
 
@@ -55,10 +52,30 @@ export async function setup(opts: { agent?: string }) {
 		return;
 	}
 
+	// Show detected and ask user to confirm each
 	console.log();
+	const rl = createInterface({ input: process.stdin, output: process.stdout });
+	const toRegister: typeof detected = [];
 
-	// Register all detected agents
-	for (const { adapter, version } of detected) {
+	try {
+		for (const d of detected) {
+			const label = `${AGENT_LABELS[d.adapter.agentType]}${d.version ? ` (${d.version})` : ""}`;
+			const answer = await rl.question(chalk.cyan(`  Register ${label}? [Y/n] `));
+			if (answer.toLowerCase() !== "n") {
+				toRegister.push(d);
+			}
+		}
+	} finally {
+		rl.close();
+	}
+
+	if (toRegister.length === 0) {
+		console.log(chalk.gray("No agents selected."));
+		return;
+	}
+
+	console.log();
+	for (const { adapter, version } of toRegister) {
 		await registerEnv(api, adapter.agentType, version, machineId, machineName);
 	}
 }
@@ -79,7 +96,6 @@ async function registerEnv(
 			os: process.platform,
 		});
 
-		// Save environment locally
 		const envDir = join(getClawdiDir(), "environments");
 		mkdirSync(envDir, { recursive: true });
 		writeFileSync(
@@ -88,7 +104,7 @@ async function registerEnv(
 			{ mode: 0o600 },
 		);
 
-		console.log(chalk.green(`✓ ${AGENT_LABELS[agentType]} registered (${env.id.slice(0, 8)})`));
+		console.log(chalk.green(`✓ ${AGENT_LABELS[agentType]} registered`));
 	} catch (e: any) {
 		console.log(chalk.red(`  Failed to register ${AGENT_LABELS[agentType]}: ${e.message}`));
 	}
