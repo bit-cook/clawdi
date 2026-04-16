@@ -161,10 +161,14 @@ export async function syncDown(opts: { modules?: string; dryRun?: boolean }) {
 			} else if (opts.dryRun) {
 				console.log(chalk.yellow(`  Would download ${skills.length} skills (dry run)`));
 			} else {
+				let pulled = 0;
 				for (const skill of skills) {
+					if (!skill.content) continue;
 					await adapter.writeSkill(skill.skill_key, skill.content);
+					console.log(chalk.gray(`    ${skill.skill_key} → ${adapter.getSkillPath(skill.skill_key)}`));
+					pulled++;
 				}
-				console.log(chalk.green(`  ✓ Pulled ${skills.length} skills`));
+				console.log(chalk.green(`  ✓ Pulled ${pulled} skills`));
 			}
 		} catch (e: any) {
 			console.log(chalk.red(`  Failed: ${e.message}`));
