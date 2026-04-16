@@ -14,14 +14,6 @@ class SkillContent:
     repo: str
 
 
-# Paths to search for SKILL.md in a repo
-SKILL_PATHS = [
-    "{path}/SKILL.md",
-    "{path}/skills/SKILL.md",
-    "SKILL.md",
-]
-
-
 def _parse_frontmatter(content: str) -> dict:
     """Extract YAML frontmatter from SKILL.md."""
     match = re.match(r"^---\s*\n(.*?)\n---\s*\n", content, re.DOTALL)
@@ -41,28 +33,30 @@ async def fetch_skill_from_github(repo: str, path: str | None = None) -> SkillCo
 
     Args:
         repo: owner/repo format (e.g. "anthropics/skills")
-        path: optional subdirectory within the repo (e.g. "code-review")
+        path: optional subdirectory within the repo (e.g. "frontend-design")
     """
-    async with httpx.AsyncClient() as client:
-        # Try multiple paths
-        search_paths = []
-        if path:
-            search_paths.append(f"{path}/SKILL.md")
-            search_paths.append(f"skills/{path}/SKILL.md")
-        search_paths.append("SKILL.md")
+    # Build search paths in priority order
+    search_paths: list[str] = []
+    if path:
+        search_paths.append(f"skills/{path}/SKILL.md")
+        search_paths.append(f"{path}/SKILL.md")
+        search_paths.append(f".claude/skills/{path}/SKILL.md")
+        search_paths.append(f".agents/skills/{path}/SKILL.md")
+    search_paths.append("SKILL.md")
 
+    branches = ["main", "master"]
+
+    async with httpx.AsyncClient(follow_redirects=True) as client:
         content = None
         for sp in search_paths:
-            url = f"https://raw.githubusercontent.com/{repo}/main/{sp}"
-            resp = await client.get(url)
-            if resp.status_code == 200:
-                content = resp.text
-                break
-            # Try master branch
-            url = f"https://raw.githubusercontent.com/{repo}/master/{sp}"
-            resp = await client.get(url)
-            if resp.status_code == 200:
-                content = resp.text
+            for branch in branches:
+                # Use refs/heads/ prefix for reliable raw access
+                url = f"https://raw.githubusercontent.com/{repo}/refs/heads/{branch}/{sp}"
+                resp = await client.get(url)
+                if resp.status_code == 200:
+                    content = resp.text
+                    break
+            if content:
                 break
 
         if not content:

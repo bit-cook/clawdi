@@ -74,15 +74,16 @@ export async function skillsInstall(repoInput: string) {
 
 	const searchPaths: string[] = [];
 	if (path) {
-		searchPaths.push(`${path}/SKILL.md`);
 		searchPaths.push(`skills/${path}/SKILL.md`);
+		searchPaths.push(`${path}/SKILL.md`);
+		searchPaths.push(`.claude/skills/${path}/SKILL.md`);
 	}
 	searchPaths.push("SKILL.md");
 
 	let content: string | null = null;
 	for (const sp of searchPaths) {
 		for (const branch of ["main", "master"]) {
-			const url = `https://raw.githubusercontent.com/${repo}/${branch}/${sp}`;
+			const url = `https://raw.githubusercontent.com/${repo}/refs/heads/${branch}/${sp}`;
 			const resp = await fetch(url);
 			if (resp.ok) {
 				content = await resp.text();
