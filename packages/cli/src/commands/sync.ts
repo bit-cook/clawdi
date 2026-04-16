@@ -38,11 +38,6 @@ async function pickModules(
 	direction: "upload" | "download",
 ): Promise<string[] | null> {
 	if (available.length === 1) {
-		// Single module — just confirm
-		const ok = await p.confirm({
-			message: `${direction === "upload" ? "Upload" : "Download"} ${available[0].label.toLowerCase()}?`,
-		});
-		if (p.isCancel(ok) || !ok) return null;
 		return [available[0].value];
 	}
 
