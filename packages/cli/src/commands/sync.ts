@@ -4,6 +4,7 @@ import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { SyncState } from "@clawdi-cloud/shared/types";
 import { ClaudeCodeAdapter } from "../adapters/claude-code";
+import type { RawSession, RawSkill } from "../adapters/base";
 import { ApiClient } from "../lib/api-client";
 import { getClawdiDir, isLoggedIn } from "../lib/config";
 
@@ -33,19 +34,6 @@ const DOWN_MODULES = [
 	{ value: "skills", label: "Skills", hint: "pull SKILL.md to agent directories" },
 ];
 
-async function pickModules(
-	available: typeof UP_MODULES,
-	direction: "upload" | "download",
-): Promise<string[] | null> {
-	const selected = await p.multiselect({
-		message: `Select modules to ${direction} (space to toggle, enter to confirm)`,
-		options: available,
-		initialValues: available.map((m) => m.value),
-	});
-	if (p.isCancel(selected) || selected.length === 0) return null;
-	return selected;
-}
-
 export async function syncUp(opts: {
 	modules?: string;
 	since?: string;
@@ -70,116 +58,129 @@ export async function syncUp(opts: {
 		return;
 	}
 
+	// 1. Select modules
 	let modules: string[];
 	if (opts.modules) {
 		modules = opts.modules.split(",");
 	} else {
-		const picked = await pickModules(UP_MODULES, "upload");
-		if (!picked) {
+		const selected = await p.multiselect({
+			message: "Select modules to upload (space to toggle, enter to confirm)",
+			options: UP_MODULES,
+			initialValues: UP_MODULES.map((m) => m.value),
+		});
+		if (p.isCancel(selected) || selected.length === 0) {
 			p.cancel("Cancelled.");
 			return;
 		}
-		modules = picked;
+		modules = selected;
 	}
 
+	// 2. Scan data
 	const syncState = getSyncState();
-	const api = opts.dryRun ? null : new ApiClient();
+	const since = opts.since
+		? new Date(opts.since)
+		: syncState.sessions?.lastSyncedAt
+			? new Date(syncState.sessions.lastSyncedAt)
+			: undefined;
+	const projectFilter = opts.all ? undefined : (opts.project ?? process.cwd());
+
+	let sessions: RawSession[] = [];
+	let skills: RawSkill[] = [];
+
+	const spin = p.spinner();
+	spin.start("Scanning local data...");
 
 	if (modules.includes("sessions")) {
-		const spin = p.spinner();
-		spin.start("Collecting sessions...");
-
-		const since = opts.since
-			? new Date(opts.since)
-			: syncState.sessions?.lastSyncedAt
-				? new Date(syncState.sessions.lastSyncedAt)
-				: undefined;
-
-		const projectFilter = opts.all ? undefined : (opts.project ?? process.cwd());
-		const sessions = await adapter.collectSessions(since, projectFilter);
-
-		if (sessions.length === 0) {
-			spin.stop("No new sessions to sync.");
-		} else if (opts.dryRun) {
-			spin.stop(`Would upload ${sessions.length} sessions (dry run)`);
-			for (const s of sessions.slice(0, 5)) {
-				console.log(
-					chalk.gray(
-						`    ${s.localSessionId.slice(0, 8)}  ${s.messageCount} msgs  ${s.model ?? "?"}  ${s.summary?.slice(0, 50) ?? ""}`,
-					),
-				);
-			}
-			if (sessions.length > 5) {
-				console.log(chalk.gray(`    ... and ${sessions.length - 5} more`));
-			}
-		} else {
-			spin.message(`Uploading ${sessions.length} sessions...`);
-			const batch = sessions.map((s) => ({
-				environment_id: envId,
-				local_session_id: s.localSessionId,
-				project_path: s.projectPath,
-				started_at: s.startedAt.toISOString(),
-				ended_at: s.endedAt?.toISOString() ?? null,
-				duration_seconds: s.durationSeconds,
-				message_count: s.messageCount,
-				input_tokens: s.inputTokens,
-				output_tokens: s.outputTokens,
-				cache_read_tokens: s.cacheReadTokens,
-				model: s.model,
-				models_used: s.modelsUsed,
-				summary: s.summary,
-				status: "completed",
-			}));
-
-			try {
-				const result = await api!.post<{ synced: number }>("/api/sessions/batch", {
-					sessions: batch,
-				});
-				spin.stop(`Synced ${result.synced} sessions`);
-			} catch (e: any) {
-				spin.stop(`Failed: ${e.message}`);
-				return;
-			}
-		}
-
-		if (!opts.dryRun) {
-			syncState.sessions = { lastSyncedAt: new Date().toISOString() };
-		}
+		sessions = await adapter.collectSessions(since, projectFilter);
 	}
-
 	if (modules.includes("skills")) {
-		const spin = p.spinner();
-		spin.start("Collecting skills...");
-		const skills = await adapter.collectSkills();
-
-		if (skills.length === 0) {
-			spin.stop("No skills found.");
-		} else if (opts.dryRun) {
-			spin.stop(`Would upload ${skills.length} skills (dry run)`);
-		} else {
-			spin.message(`Uploading ${skills.length} skills...`);
-			try {
-				const result = await api!.post<{ synced: number }>("/api/skills/batch", {
-					skills: skills.map((s) => ({
-						skill_key: s.skillKey,
-						name: s.name,
-						content: s.content,
-					})),
-				});
-				spin.stop(`Synced ${result.synced} skills`);
-			} catch (e: any) {
-				spin.stop(`Failed: ${e.message}`);
-			}
-		}
-
-		if (!opts.dryRun) {
-			syncState.skills = { lastSyncedAt: new Date().toISOString() };
-		}
+		skills = await adapter.collectSkills();
 	}
 
+	spin.stop("Scan complete");
+
+	// 3. Summary
+	const summary: string[] = [];
+	if (modules.includes("sessions")) {
+		summary.push(`Sessions: ${sessions.length} to upload`);
+	}
+	if (modules.includes("skills")) {
+		summary.push(`Skills: ${skills.length} to upload`);
+	}
+
+	p.note(summary.join("\n"), "Summary");
+
+	if (sessions.length === 0 && skills.length === 0) {
+		p.outro("Nothing to sync.");
+		return;
+	}
+
+	// 4. Confirm
 	if (!opts.dryRun) {
-		saveSyncState(syncState);
+		const ok = await p.confirm({ message: "Proceed with upload?" });
+		if (p.isCancel(ok) || !ok) {
+			p.cancel("Cancelled.");
+			return;
+		}
 	}
+
+	if (opts.dryRun) {
+		p.outro("Dry run complete.");
+		return;
+	}
+
+	// 5. Execute
+	const api = new ApiClient();
+
+	if (sessions.length > 0) {
+		const spin2 = p.spinner();
+		spin2.start(`Uploading ${sessions.length} sessions...`);
+		try {
+			const result = await api.post<{ synced: number }>("/api/sessions/batch", {
+				sessions: sessions.map((s) => ({
+					environment_id: envId,
+					local_session_id: s.localSessionId,
+					project_path: s.projectPath,
+					started_at: s.startedAt.toISOString(),
+					ended_at: s.endedAt?.toISOString() ?? null,
+					duration_seconds: s.durationSeconds,
+					message_count: s.messageCount,
+					input_tokens: s.inputTokens,
+					output_tokens: s.outputTokens,
+					cache_read_tokens: s.cacheReadTokens,
+					model: s.model,
+					models_used: s.modelsUsed,
+					summary: s.summary,
+					status: "completed",
+				})),
+			});
+			spin2.stop(`Synced ${result.synced} sessions`);
+		} catch (e: any) {
+			spin2.stop(`Failed: ${e.message}`);
+		}
+		syncState.sessions = { lastSyncedAt: new Date().toISOString() };
+	}
+
+	if (skills.length > 0) {
+		const spin3 = p.spinner();
+		spin3.start(`Uploading ${skills.length} skills...`);
+		try {
+			const result = await api.post<{ synced: number }>("/api/skills/batch", {
+				skills: skills.map((s) => ({
+					skill_key: s.skillKey,
+					name: s.name,
+					content: s.content,
+				})),
+			});
+			spin3.stop(`Synced ${result.synced} skills`);
+		} catch (e: any) {
+			spin3.stop(`Failed: ${e.message}`);
+		}
+		syncState.skills = { lastSyncedAt: new Date().toISOString() };
+	}
+
+	saveSyncState(syncState);
+	p.outro("Sync complete");
 }
 
 export async function syncDown(opts: { modules?: string; dryRun?: boolean }) {
@@ -191,56 +192,90 @@ export async function syncDown(opts: { modules?: string; dryRun?: boolean }) {
 	const adapter = new ClaudeCodeAdapter();
 	const api = new ApiClient();
 
+	// 1. Select modules
 	let modules: string[];
 	if (opts.modules) {
 		modules = opts.modules.split(",");
 	} else {
-		const picked = await pickModules(DOWN_MODULES, "download");
-		if (!picked) {
+		const selected = await p.multiselect({
+			message: "Select modules to download (space to toggle, enter to confirm)",
+			options: DOWN_MODULES,
+			initialValues: DOWN_MODULES.map((m) => m.value),
+		});
+		if (p.isCancel(selected) || selected.length === 0) {
 			p.cancel("Cancelled.");
 			return;
 		}
-		modules = picked;
+		modules = selected;
 	}
 
+	// 2. Scan cloud data
+	let cloudSkills: Array<{ skill_key: string; name: string; content?: string }> = [];
+
+	const spin = p.spinner();
+	spin.start("Fetching from cloud...");
+
 	if (modules.includes("skills")) {
-		const spin = p.spinner();
-		spin.start("Pulling skills from cloud...");
+		cloudSkills = await api.get("/api/skills?include_content=true");
+	}
 
-		try {
-			const skills = await api.get<Array<{ skill_key: string; name: string; content?: string }>>(
-				"/api/skills?include_content=true",
-			);
+	spin.stop("Fetch complete");
 
-			if (skills.length === 0) {
-				spin.stop("No skills in cloud.");
-			} else if (opts.dryRun) {
-				spin.stop(`Would download ${skills.length} skills (dry run)`);
-			} else {
-				spin.stop(`Found ${skills.length} skills`);
+	// 3. Summary
+	const summary: string[] = [];
+	if (modules.includes("skills")) {
+		const newCount = cloudSkills.filter(
+			(s) => s.content && !existsSync(adapter.getSkillPath(s.skill_key)),
+		).length;
+		const existingCount = cloudSkills.filter(
+			(s) => s.content && existsSync(adapter.getSkillPath(s.skill_key)),
+		).length;
+		summary.push(
+			`Skills: ${cloudSkills.length} in cloud (${newCount} new, ${existingCount} existing)`,
+		);
+	}
 
-				let pulled = 0;
-				for (const skill of skills) {
-					if (!skill.content) continue;
-					const dest = adapter.getSkillPath(skill.skill_key);
-					if (existsSync(dest)) {
-						const overwrite = await p.confirm({
-							message: `${skill.skill_key} already exists. Overwrite?`,
-							initialValue: false,
-						});
-						if (p.isCancel(overwrite) || !overwrite) {
-							console.log(chalk.gray(`    ${skill.skill_key} skipped`));
-							continue;
-						}
-					}
-					await adapter.writeSkill(skill.skill_key, skill.content);
-					console.log(chalk.gray(`    ${skill.skill_key} → ${dest}`));
-					pulled++;
-				}
-				p.outro(`Pulled ${pulled} skills`);
-			}
-		} catch (e: any) {
-			spin.stop(`Failed: ${e.message}`);
+	p.note(summary.join("\n"), "Summary");
+
+	if (cloudSkills.length === 0) {
+		p.outro("Nothing to download.");
+		return;
+	}
+
+	// 4. Confirm
+	if (!opts.dryRun) {
+		const ok = await p.confirm({ message: "Proceed with download?" });
+		if (p.isCancel(ok) || !ok) {
+			p.cancel("Cancelled.");
+			return;
 		}
+	}
+
+	if (opts.dryRun) {
+		p.outro("Dry run complete.");
+		return;
+	}
+
+	// 5. Execute
+	if (cloudSkills.length > 0) {
+		let pulled = 0;
+		for (const skill of cloudSkills) {
+			if (!skill.content) continue;
+			const dest = adapter.getSkillPath(skill.skill_key);
+			if (existsSync(dest)) {
+				const overwrite = await p.confirm({
+					message: `${skill.skill_key} already exists. Overwrite?`,
+					initialValue: false,
+				});
+				if (p.isCancel(overwrite) || !overwrite) {
+					console.log(chalk.gray(`    ${skill.skill_key} skipped`));
+					continue;
+				}
+			}
+			await adapter.writeSkill(skill.skill_key, skill.content);
+			console.log(chalk.gray(`    ${skill.skill_key} → ${dest}`));
+			pulled++;
+		}
+		p.outro(`Pulled ${pulled} skills`);
 	}
 }

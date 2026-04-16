@@ -127,7 +127,7 @@ PostgreSQL（结构化数据 + 元数据）:
 
 File Store（S3 / R2 / 本地文件系统）:
   ├── sessions/{user_id}/{session_id}.jsonl    原始会话文件
-  ├── skills/{user_id}/{skill_key}/SKILL.md    技能文件/包
+  ├── skills/{user_id}/{skill_key}.tar.gz       技能目录打包（SKILL.md + references/）
   └── exports/{user_id}/...                    导出数据
 
 Memory（外部 Provider）:
