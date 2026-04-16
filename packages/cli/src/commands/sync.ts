@@ -7,6 +7,7 @@ import { ClaudeCodeAdapter } from "../adapters/claude-code";
 import type { RawSession, RawSkill } from "../adapters/base";
 import { ApiClient } from "../lib/api-client";
 import { getClawdiDir, isLoggedIn } from "../lib/config";
+import { tarSkillDir } from "../lib/tar-helpers";
 
 function getEnvIdByAgent(agentType: string): string | null {
 	const envPath = join(getClawdiDir(), "environments", `${agentType}.json`);
@@ -27,11 +28,11 @@ function saveSyncState(state: SyncState) {
 
 const UP_MODULES = [
 	{ value: "sessions", label: "Sessions", hint: "agent conversation history" },
-	{ value: "skills", label: "Skills", hint: "SKILL.md files" },
+	{ value: "skills", label: "Skills", hint: "skill directories as tar.gz" },
 ];
 
 const DOWN_MODULES = [
-	{ value: "skills", label: "Skills", hint: "pull SKILL.md to agent directories" },
+	{ value: "skills", label: "Skills", hint: "pull skill archives to agent directories" },
 ];
 
 export async function syncUp(opts: {
@@ -154,7 +155,7 @@ export async function syncUp(opts: {
 					status: "completed",
 				})),
 			});
-			spin2.stop(`Synced ${result.synced} sessions`);
+			spin2.stop(`Synced ${result.synced} session${result.synced === 1 ? "" : "s"}`);
 		} catch (e: any) {
 			spin2.stop(`Failed: ${e.message}`);
 		}
@@ -164,17 +165,21 @@ export async function syncUp(opts: {
 	if (skills.length > 0) {
 		const spin3 = p.spinner();
 		spin3.start(`Uploading ${skills.length} skills...`);
+		let synced = 0;
 		try {
-			const result = await api.post<{ synced: number }>("/api/skills/batch", {
-				skills: skills.map((s) => ({
-					skill_key: s.skillKey,
-					name: s.name,
-					content: s.content,
-				})),
-			});
-			spin3.stop(`Synced ${result.synced} skills`);
+			for (const skill of skills) {
+				const tarBytes = await tarSkillDir(skill.directoryPath);
+				await api.uploadFile(
+					"/api/skills/upload",
+					{ skill_key: skill.skillKey },
+					tarBytes,
+					`${skill.skillKey}.tar.gz`,
+				);
+				synced++;
+			}
+			spin3.stop(`Synced ${synced} skill${synced === 1 ? "" : "s"}`);
 		} catch (e: any) {
-			spin3.stop(`Failed: ${e.message}`);
+			spin3.stop(`Failed after ${synced} skills: ${e.message}`);
 		}
 		syncState.skills = { lastSyncedAt: new Date().toISOString() };
 	}
@@ -209,14 +214,14 @@ export async function syncDown(opts: { modules?: string; dryRun?: boolean }) {
 		modules = selected;
 	}
 
-	// 2. Scan cloud data
-	let cloudSkills: Array<{ skill_key: string; name: string; content?: string }> = [];
+	// 2. Fetch skill list from cloud
+	let cloudSkills: Array<{ skill_key: string; name: string }> = [];
 
 	const spin = p.spinner();
 	spin.start("Fetching from cloud...");
 
 	if (modules.includes("skills")) {
-		cloudSkills = await api.get("/api/skills?include_content=true");
+		cloudSkills = await api.get("/api/skills");
 	}
 
 	spin.stop("Fetch complete");
@@ -225,11 +230,9 @@ export async function syncDown(opts: { modules?: string; dryRun?: boolean }) {
 	const summary: string[] = [];
 	if (modules.includes("skills")) {
 		const newCount = cloudSkills.filter(
-			(s) => s.content && !existsSync(adapter.getSkillPath(s.skill_key)),
+			(s) => !existsSync(adapter.getSkillPath(s.skill_key)),
 		).length;
-		const existingCount = cloudSkills.filter(
-			(s) => s.content && existsSync(adapter.getSkillPath(s.skill_key)),
-		).length;
+		const existingCount = cloudSkills.length - newCount;
 		summary.push(
 			`Skills: ${cloudSkills.length} in cloud (${newCount} new, ${existingCount} existing)`,
 		);
@@ -256,26 +259,29 @@ export async function syncDown(opts: { modules?: string; dryRun?: boolean }) {
 		return;
 	}
 
-	// 5. Execute
-	if (cloudSkills.length > 0) {
-		let pulled = 0;
-		for (const skill of cloudSkills) {
-			if (!skill.content) continue;
-			const dest = adapter.getSkillPath(skill.skill_key);
-			if (existsSync(dest)) {
-				const overwrite = await p.confirm({
-					message: `${skill.skill_key} already exists. Overwrite?`,
-					initialValue: false,
-				});
-				if (p.isCancel(overwrite) || !overwrite) {
-					console.log(chalk.gray(`    ${skill.skill_key} skipped`));
-					continue;
-				}
+	// 5. Download tar.gz archives and extract
+	let pulled = 0;
+	for (const skill of cloudSkills) {
+		const dest = adapter.getSkillPath(skill.skill_key);
+		if (existsSync(dest)) {
+			const overwrite = await p.confirm({
+				message: `${skill.skill_key} already exists. Overwrite?`,
+				initialValue: false,
+			});
+			if (p.isCancel(overwrite) || !overwrite) {
+				console.log(chalk.gray(`    ${skill.skill_key} skipped`));
+				continue;
 			}
-			await adapter.writeSkill(skill.skill_key, skill.content);
-			console.log(chalk.gray(`    ${skill.skill_key} → ${dest}`));
-			pulled++;
 		}
-		p.outro(`Pulled ${pulled} skills`);
+
+		try {
+			const tarBytes = await api.getBytes(`/api/skills/${skill.skill_key}/download`);
+			await adapter.writeSkillArchive(skill.skill_key, tarBytes);
+			console.log(chalk.gray(`    ${skill.skill_key} → ~/.claude/skills/${skill.skill_key}/ (${tarBytes.length} bytes)`));
+			pulled++;
+		} catch (e: any) {
+			console.log(chalk.yellow(`    ${skill.skill_key} failed: ${e.message}`));
+		}
 	}
+	p.outro(`Pulled ${pulled} skill${pulled === 1 ? "" : "s"}`);
 }

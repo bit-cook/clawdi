@@ -11,6 +11,7 @@ export interface RawSession {
 	cacheReadTokens: number;
 	model: string | null;
 	modelsUsed: string[];
+	durationSeconds: number | null;
 	summary: string | null;
 	rawFilePath: string;
 }
@@ -20,6 +21,8 @@ export interface RawSkill {
 	name: string;
 	content: string;
 	filePath: string;
+	directoryPath: string;
+	isDirectory: boolean;
 }
 
 export interface AgentAdapter {
@@ -32,7 +35,7 @@ export interface AgentAdapter {
 	collectSkills(): Promise<RawSkill[]>;
 
 	getSkillPath(key: string): string;
-	writeSkill(key: string, content: string): Promise<void>;
+	writeSkillArchive(key: string, tarGzBytes: Buffer): Promise<void>;
 
 	buildRunCommand(args: string[], env: Record<string, string>): string[];
 }

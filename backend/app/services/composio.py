@@ -52,7 +52,7 @@ async def get_connected_accounts(user_id: str) -> list[dict]:
     client = get_composio_client()
 
     def _list():
-        accounts = client.connected_accounts.get(entity_ids=[user_id])
+        accounts = client.connected_accounts.get(entity_ids=[user_id], active=True)
         if not isinstance(accounts, list):
             accounts = [accounts] if accounts else []
         return [
@@ -104,7 +104,7 @@ async def disconnect_account(connected_account_id: str) -> bool:
     client = get_composio_client()
 
     def _disconnect():
-        client.http_client.delete(f"/v1/connectedAccounts/{connected_account_id}")
+        client.http.delete(f"/v1/connectedAccounts/{connected_account_id}")
         return True
 
     try:
@@ -112,6 +112,72 @@ async def disconnect_account(connected_account_id: str) -> bool:
     except Exception as e:
         logger.warning(f"Failed to disconnect account {connected_account_id}: {e}")
         return False
+
+
+def _serialize_actions(
+    actions,
+    *,
+    include_app: str | None = None,
+    skip_deprecated: bool = False,
+    include_parameters: bool = False,
+) -> list[dict]:
+    """Normalize Composio action objects into dicts."""
+    if not isinstance(actions, list):
+        actions = [actions] if actions else []
+    result = []
+    for a in actions:
+        is_deprecated = getattr(a, "is_deprecated", False)
+        if skip_deprecated and is_deprecated:
+            continue
+        item: dict = {
+            "name": a.name or "",
+            "display_name": a.display_name or a.name or "",
+            "description": (a.description or "")[:300],
+            "is_deprecated": is_deprecated,
+        }
+        if include_app is not None:
+            item["app"] = include_app
+        if include_parameters and hasattr(a, "parameters"):
+            try:
+                params = a.parameters
+                item["parameters"] = {
+                    "properties": params.properties,
+                    "required": params.required or [],
+                }
+            except Exception:
+                pass
+        result.append(item)
+    return result
+
+
+async def get_connected_tools(user_id: str) -> list[dict]:
+    """List all tools from user's active connected apps."""
+    accounts = await get_connected_accounts(user_id)
+    if not accounts:
+        return []
+    app_names = list({a["app_name"] for a in accounts})
+    client = get_composio_client()
+
+    def _list():
+        try:
+            actions = client.actions.get(apps=app_names)
+            return _serialize_actions(actions, skip_deprecated=True, include_parameters=True)
+        except Exception as e:
+            logger.warning(f"Failed to get connected tools: {e}")
+            return []
+
+    return await run_in_threadpool(_list)
+
+
+async def get_app_tools(app_name: str) -> list[dict]:
+    """List available tools/actions for a specific Composio app."""
+    client = get_composio_client()
+
+    def _list():
+        actions = client.actions.get(apps=[app_name])
+        return _serialize_actions(actions)
+
+    return await run_in_threadpool(_list)
 
 
 async def get_available_apps(search: str | None = None) -> list[dict]:
@@ -124,14 +190,14 @@ async def get_available_apps(search: str | None = None) -> list[dict]:
             apps = [apps] if apps else []
         result = []
         for app in apps:
-            name = app.name or ""
-            display = app.key or name
+            key = app.key or app.name or ""
+            display = app.name or key
             logo = app.logo or ""
             desc = app.description or ""
-            if search and search.lower() not in name.lower() and search.lower() not in display.lower():
+            if search and search.lower() not in key.lower() and search.lower() not in display.lower():
                 continue
             result.append({
-                "name": name,
+                "name": key,
                 "display_name": display,
                 "logo": logo,
                 "description": desc[:200] if desc else "",

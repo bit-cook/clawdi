@@ -21,4 +21,5 @@ class Skill(Base, TimestampMixin):
     content_hash: Mapped[str] = mapped_column(String(64), nullable=False)
     file_key: Mapped[str | None] = mapped_column(Text)
     source_repo: Mapped[str | None] = mapped_column(String(200))
+    file_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
     is_active: Mapped[bool] = mapped_column(Boolean, server_default="true")

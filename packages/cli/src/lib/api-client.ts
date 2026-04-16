@@ -47,4 +47,45 @@ export class ApiClient {
 	async delete<T>(path: string): Promise<T> {
 		return this.request<T>(path, { method: "DELETE" });
 	}
+
+	async uploadFile<T>(
+		path: string,
+		fields: Record<string, string>,
+		file: Buffer,
+		filename: string,
+	): Promise<T> {
+		const formData = new FormData();
+		for (const [k, v] of Object.entries(fields)) {
+			formData.append(k, v);
+		}
+		formData.append("file", new Blob([new Uint8Array(file)]), filename);
+
+		const url = `${this.baseUrl}${path}`;
+		const res = await fetch(url, {
+			method: "POST",
+			headers: { Authorization: `Bearer ${this.apiKey}` },
+			body: formData,
+		});
+
+		if (!res.ok) {
+			const text = await res.text();
+			throw new Error(`API error ${res.status}: ${text}`);
+		}
+
+		return res.json();
+	}
+
+	async getBytes(path: string): Promise<Buffer> {
+		const url = `${this.baseUrl}${path}`;
+		const res = await fetch(url, {
+			headers: { Authorization: `Bearer ${this.apiKey}` },
+		});
+
+		if (!res.ok) {
+			const text = await res.text();
+			throw new Error(`API error ${res.status}: ${text}`);
+		}
+
+		return Buffer.from(await res.arrayBuffer());
+	}
 }

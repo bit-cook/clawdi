@@ -5,10 +5,25 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Check, ChevronLeft, ChevronRight, Search, X } from "lucide-react";
 import Link from "next/link";
 import { useDeferredValue, useMemo, useState } from "react";
+import { ConnectorIcon } from "@/components/connectors/connector-icon";
+import { Skeleton } from "@/components/ui/skeleton";
 import { apiFetch } from "@/lib/api";
 import { cn } from "@/lib/utils";
 
 const PAGE_SIZE = 30;
+
+function ConnectorCardSkeleton() {
+  return (
+    <div className="flex h-20 items-center gap-4 rounded-xl border bg-card px-4">
+      <Skeleton className="size-11 rounded-xl" />
+      <div className="min-w-0 flex-1 space-y-1.5">
+        <Skeleton className="h-3.5 w-28" />
+        <Skeleton className="h-3 w-44" />
+      </div>
+    </div>
+  );
+}
+
 
 export default function ConnectorsPage() {
   const { getToken } = useAuth();
@@ -47,10 +62,15 @@ export default function ConnectorsPage() {
       window.open(result.connect_url, "_blank");
     },
     onSuccess: () => {
-      setTimeout(
-        () => queryClient.invalidateQueries({ queryKey: ["connections"] }),
-        3000,
-      );
+      let attempts = 0;
+      const poll = () => {
+        if (attempts++ >= 12) return;
+        setTimeout(() => {
+          queryClient.invalidateQueries({ queryKey: ["connections"] });
+          poll();
+        }, 5000);
+      };
+      poll();
     },
   });
 
@@ -109,12 +129,12 @@ export default function ConnectorsPage() {
         </div>
         <div className="flex items-center gap-2">
           {availableApps && (
-            <span className="bg-muted px-3 py-1 rounded-full text-xs font-medium">
+            <span className="rounded-full bg-muted px-3 py-1 text-xs font-medium text-muted-foreground">
               {availableApps.length} available
             </span>
           )}
           {(connections?.length ?? 0) > 0 && (
-            <span className="bg-primary/10 px-3 py-1 rounded-full text-xs font-semibold text-primary">
+            <span className="rounded-full bg-primary/10 px-3 py-1 text-xs font-semibold text-primary">
               {connections!.length} active
             </span>
           )}
@@ -144,11 +164,13 @@ export default function ConnectorsPage() {
 
       {/* Grid */}
       {isLoading ? (
-        <div className="rounded-xl border border-dashed bg-card p-8 text-center text-sm text-muted-foreground">
-          Loading connectors...
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
+          {Array.from({ length: 12 }).map((_, i) => (
+            <ConnectorCardSkeleton key={i} />
+          ))}
         </div>
       ) : filtered.length === 0 ? (
-        <div className="rounded-xl border border-dashed bg-card p-8 text-center text-sm text-muted-foreground">
+        <div className="rounded-lg border border-dashed bg-card p-6 text-center text-sm text-muted-foreground">
           {query
             ? `No connectors matching "${query}"`
             : "No connectors available. Configure COMPOSIO_API_KEY."}
@@ -162,30 +184,9 @@ export default function ConnectorsPage() {
                 <Link
                   key={app.name}
                   href={`/connectors/${app.name}`}
-                  className="group flex h-20 items-center gap-4 rounded-xl border border-border bg-card px-4 transition-all hover:bg-accent/40"
+                  className="group flex h-20 items-center gap-4 rounded-xl border bg-card px-4 transition-all hover:border-foreground/15 hover:bg-accent/40"
                 >
-                  {/* Icon */}
-                  <div className="flex size-11 shrink-0 items-center justify-center rounded-xl bg-muted">
-                    {app.logo ? (
-                      <img
-                        src={app.logo}
-                        alt=""
-                        className="size-6 rounded"
-                        onError={(e) => {
-                          const t = e.target as HTMLImageElement;
-                          t.style.display = "none";
-                          const fb = document.createElement("span");
-                          fb.className = "text-lg";
-                          fb.textContent = app.display_name?.[0] ?? "?";
-                          t.parentElement!.appendChild(fb);
-                        }}
-                      />
-                    ) : (
-                      <span className="text-lg">
-                        {app.display_name?.[0] ?? "?"}
-                      </span>
-                    )}
-                  </div>
+                  <ConnectorIcon logo={app.logo} name={app.display_name} size="md" />
 
                   {/* Text */}
                   <div className="min-w-0 flex-1">
@@ -194,11 +195,9 @@ export default function ConnectorsPage() {
                         {app.display_name}
                       </span>
                     </div>
-                    {app.description && (
-                      <p className="mt-0.5 line-clamp-2 text-xs text-muted-foreground">
-                        {app.description}
-                      </p>
-                    )}
+                    <p className="mt-0.5 line-clamp-2 text-xs text-muted-foreground">
+                      {app.description}
+                    </p>
                   </div>
 
                   {/* Connected indicator */}
@@ -223,7 +222,7 @@ export default function ConnectorsPage() {
                   type="button"
                   onClick={() => setPage((p) => Math.max(0, p - 1))}
                   disabled={page === 0}
-                  className="size-8 flex items-center justify-center rounded-lg border border-border text-muted-foreground hover:bg-muted disabled:opacity-30 transition-colors"
+                  className="size-8 flex items-center justify-center rounded-lg border text-muted-foreground hover:bg-muted disabled:opacity-30 transition-colors"
                 >
                   <ChevronLeft className="size-4" />
                 </button>
@@ -236,7 +235,7 @@ export default function ConnectorsPage() {
                     setPage((p) => Math.min(totalPages - 1, p + 1))
                   }
                   disabled={page >= totalPages - 1}
-                  className="size-8 flex items-center justify-center rounded-lg border border-border text-muted-foreground hover:bg-muted disabled:opacity-30 transition-colors"
+                  className="size-8 flex items-center justify-center rounded-lg border text-muted-foreground hover:bg-muted disabled:opacity-30 transition-colors"
                 >
                   <ChevronRight className="size-4" />
                 </button>

@@ -2,17 +2,39 @@
 
 import { useAuth } from "@clerk/nextjs";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { ArrowLeft, Check, Link2Off, Plug } from "lucide-react";
+import {
+  ArrowLeft,
+  Check,
+  Link2Off,
+  Loader2,
+  Lock,
+  Plug,
+  PlugZap,
+  Search,
+  Shield,
+} from "lucide-react";
 import Link from "next/link";
 import { useParams } from "next/navigation";
+import { useDeferredValue, useMemo, useState } from "react";
+import { ConnectorIcon } from "@/components/connectors/connector-icon";
+import { Skeleton } from "@/components/ui/skeleton";
 import { apiFetch } from "@/lib/api";
+import { cn } from "@/lib/utils";
+
+/** Strip leading underscores/dashes and title-case for fallback display. */
+function formatName(raw: string): string {
+  return raw
+    .replace(/^[_-]+/, "")
+    .replace(/[_-]/g, " ")
+    .replace(/\b\w/g, (c) => c.toUpperCase());
+}
 
 export default function ConnectorDetailPage() {
   const { name } = useParams<{ name: string }>();
   const { getToken } = useAuth();
   const queryClient = useQueryClient();
 
-  const { data: apps } = useQuery({
+  const { data: apps, isLoading: isAppsLoading } = useQuery({
     queryKey: ["available-apps"],
     queryFn: async () => {
       const token = await getToken();
@@ -21,12 +43,21 @@ export default function ConnectorDetailPage() {
     },
   });
 
-  const { data: connections } = useQuery({
+  const { data: connections, isLoading: isConnectionsLoading } = useQuery({
     queryKey: ["connections"],
     queryFn: async () => {
       const token = await getToken();
       if (!token) throw new Error("Not authenticated");
       return apiFetch<any[]>("/api/connectors", token);
+    },
+  });
+
+  const { data: tools, isLoading: isToolsLoading } = useQuery({
+    queryKey: ["connector-tools", name],
+    queryFn: async () => {
+      const token = await getToken();
+      if (!token) throw new Error("Not authenticated");
+      return apiFetch<any[]>(`/api/connectors/${name}/tools`, token);
     },
   });
 
@@ -42,10 +73,16 @@ export default function ConnectorDetailPage() {
       window.open(result.connect_url, "_blank");
     },
     onSuccess: () => {
-      setTimeout(
-        () => queryClient.invalidateQueries({ queryKey: ["connections"] }),
-        3000,
-      );
+      // Poll for connection status — user may take time to complete OAuth
+      let attempts = 0;
+      const poll = () => {
+        if (attempts++ >= 12) return;
+        setTimeout(() => {
+          queryClient.invalidateQueries({ queryKey: ["connections"] });
+          poll();
+        }, 5000);
+      };
+      poll();
     },
   });
 
@@ -65,102 +102,327 @@ export default function ConnectorDetailPage() {
   const activeConnections =
     connections?.filter((c: any) => c.app_name === name) ?? [];
   const isConnected = activeConnections.length > 0;
+  const isLoading = isAppsLoading || isConnectionsLoading;
+
+  const displayName = app?.display_name || formatName(name);
+
+  if (isLoading) {
+    return (
+      <div className="mx-auto flex w-full max-w-5xl flex-col gap-4 px-4 py-4 md:px-6 md:py-6">
+        <BackLink />
+        <DetailSkeleton />
+      </div>
+    );
+  }
 
   return (
-    <div className="max-w-2xl space-y-6">
-      {/* Back */}
-      <Link
-        href="/connectors"
-        className="inline-flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground transition-colors"
-      >
-        <ArrowLeft className="size-4" />
-        Connectors
-      </Link>
+    <div className="mx-auto flex w-full max-w-5xl flex-col gap-4 px-4 py-4 md:px-6 md:py-6">
+      <BackLink />
 
-      {/* Header */}
-      <div className="flex items-start gap-4">
-        <div className="flex size-14 shrink-0 items-center justify-center rounded-xl bg-muted">
-          {app?.logo ? (
-            <img src={app.logo} alt="" className="size-8 rounded" />
-          ) : (
-            <span className="text-2xl">
-              {app?.display_name?.[0] ?? "?"}
-            </span>
-          )}
-        </div>
-        <div className="flex-1 min-w-0">
+      {/* Header — matches clawdi ConnectorHeader */}
+      <div className="flex items-start gap-5">
+        <ConnectorIcon logo={app?.logo} name={displayName} size="lg" />
+        <div className="min-w-0 flex-1">
           <div className="flex items-center gap-2">
-            <h1 className="text-xl font-bold">
-              {app?.display_name ?? name}
+            <h1 className="text-lg font-semibold tracking-tight">
+              {displayName}
             </h1>
             {isConnected && (
-              <span className="inline-flex items-center gap-1 rounded-full border border-green-500/30 px-2 py-0.5 text-[10px] font-medium text-green-600 dark:text-green-400">
+              <span className="inline-flex items-center gap-1 rounded-full bg-green-500/10 px-2 py-0.5 text-[10px] font-medium text-green-600 dark:text-green-400">
                 <Check className="size-2.5" />
                 Connected
               </span>
             )}
           </div>
-          {app?.description && (
-            <p className="mt-1 text-sm text-muted-foreground">
-              {app.description}
-            </p>
-          )}
+          <p className="mt-1 line-clamp-2 text-sm text-muted-foreground">
+            {app?.description || name}
+          </p>
         </div>
       </div>
 
-      {/* Connect / Connections */}
-      <div className="space-y-3">
-        {activeConnections.length > 0 ? (
-          <>
-            <h2 className="text-sm font-medium text-muted-foreground">
-              Active Connections
+      {/* Connection Management — matches clawdi ConnectionManagement */}
+      <section>
+        <div className="mb-3 flex items-center justify-between gap-3">
+          <div>
+            <h2 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+              Connected Accounts
             </h2>
-            <div className="space-y-2">
-              {activeConnections.map((c: any) => (
-                <div
-                  key={c.id}
-                  className="flex items-center justify-between rounded-xl border border-border bg-card px-4 py-3"
-                >
-                  <div>
-                    <div className="text-sm font-medium">{c.app_name}</div>
-                    <div className="text-xs text-muted-foreground">
-                      {c.status} · {c.created_at}
-                    </div>
-                  </div>
-                  <button
-                    type="button"
-                    onClick={() => disconnectApp.mutate(c.id)}
-                    className="flex items-center gap-1.5 rounded-lg border border-border px-3 py-1.5 text-xs text-muted-foreground hover:text-destructive hover:border-destructive/30 transition-colors"
-                  >
-                    <Link2Off className="size-3.5" />
-                    Disconnect
-                  </button>
-                </div>
-              ))}
-            </div>
-
+            <p className="mt-1 text-xs text-muted-foreground">
+              {activeConnections.length} connected
+            </p>
+          </div>
+          {activeConnections.length > 0 && (
             <button
               type="button"
               onClick={() => connectApp.mutate()}
               disabled={connectApp.isPending}
-              className="flex items-center gap-1.5 rounded-lg border border-border px-4 py-2 text-sm hover:bg-muted transition-colors disabled:opacity-50"
+              className="inline-flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-xs hover:bg-muted transition-colors disabled:opacity-50"
             >
-              <Plug className="size-4" />
-              Add another account
+              {connectApp.isPending ? (
+                <Loader2 className="size-3.5 animate-spin" />
+              ) : (
+                <Plug className="size-3.5" />
+              )}
+              Connect
             </button>
-          </>
+          )}
+        </div>
+
+        {activeConnections.length === 0 ? (
+          <div className="rounded-lg border border-dashed p-6 text-center text-sm text-muted-foreground">
+            No connected accounts yet.
+            <div className="mt-3">
+              <button
+                type="button"
+                onClick={() => connectApp.mutate()}
+                disabled={connectApp.isPending}
+                className="inline-flex items-center gap-2 rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50 transition-colors"
+              >
+                {connectApp.isPending ? (
+                  <Loader2 className="size-3.5 animate-spin" />
+                ) : (
+                  <Plug className="size-3.5" />
+                )}
+                {connectApp.isPending ? "Connecting..." : "Connect"}
+              </button>
+            </div>
+          </div>
         ) : (
-          <button
-            type="button"
-            onClick={() => connectApp.mutate()}
-            disabled={connectApp.isPending}
-            className="flex items-center gap-2 rounded-xl bg-primary px-5 py-2.5 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:opacity-50 transition-opacity"
-          >
-            <Plug className="size-4" />
-            {connectApp.isPending ? "Connecting..." : "Connect"}
-          </button>
+          <div className="flex flex-col gap-2">
+            {activeConnections.map((c: any) => (
+              <div
+                key={c.id}
+                className="flex items-center justify-between gap-3 rounded-lg border px-4 py-3"
+              >
+                <div className="min-w-0">
+                  <p className="truncate text-sm font-medium">{c.app_name}</p>
+                  <p className="mt-0.5 text-xs text-muted-foreground">
+                    {c.status
+                      ?.replace(/_/g, " ")
+                      .replace(/\b\w/g, (l: string) => l.toUpperCase())}
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => disconnectApp.mutate(c.id)}
+                  disabled={disconnectApp.isPending}
+                  className="inline-flex shrink-0 items-center gap-1 rounded-md px-2 py-1 text-xs text-destructive hover:bg-destructive/10 transition-colors disabled:opacity-50"
+                >
+                  {disconnectApp.isPending ? (
+                    <Loader2 className="size-3.5 animate-spin" />
+                  ) : (
+                    <Link2Off className="size-3.5" />
+                  )}
+                  Disconnect
+                </button>
+              </div>
+            ))}
+          </div>
         )}
+      </section>
+
+      {/* Info Sections — matches clawdi ConnectorInfoSections */}
+      <div className="flex flex-col gap-4">
+        {/* Setup Steps */}
+        <section className="rounded-lg border bg-card p-4">
+          <h2 className="mb-3 flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+            <PlugZap className="size-3.5" /> Setup Steps
+          </h2>
+          <ol className="flex flex-col gap-2">
+            {["Click Connect to authorize access", "Complete authentication in the popup window", "Return here to verify connection"].map(
+              (step, i) => (
+                <li key={step} className="flex items-start gap-3">
+                  <span className="flex size-5 shrink-0 items-center justify-center rounded-full bg-primary/10 text-[10px] font-bold text-primary">
+                    {i + 1}
+                  </span>
+                  <span className="text-sm">{step}</span>
+                </li>
+              ),
+            )}
+          </ol>
+        </section>
+
+        {/* Permissions */}
+        <section className="rounded-lg border bg-card p-4">
+          <h2 className="mb-3 flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+            <Shield className="size-3.5" /> Permissions
+          </h2>
+          <ul className="flex flex-col gap-2">
+            {["Read data from your account", "Perform actions on your behalf"].map(
+              (perm) => (
+                <li key={perm} className="flex items-center gap-2 text-sm">
+                  <Lock className="size-3 text-muted-foreground" />
+                  {perm}
+                </li>
+              ),
+            )}
+          </ul>
+        </section>
+      </div>
+
+      {/* Tools — matches clawdi ConnectorToolsList */}
+      <ConnectorToolsList
+        tools={tools ?? []}
+        isLoading={isToolsLoading}
+      />
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Sub-components
+// ---------------------------------------------------------------------------
+
+function BackLink() {
+  return (
+    <Link
+      href="/connectors"
+      className="inline-flex items-center gap-1.5 text-sm text-muted-foreground transition-colors hover:text-foreground"
+    >
+      <ArrowLeft className="size-4" />
+      Connectors
+    </Link>
+  );
+}
+
+function DetailSkeleton() {
+  return (
+    <div className="flex flex-col gap-4">
+      {/* Header */}
+      <div className="flex items-start gap-5">
+        <Skeleton className="size-14 rounded-2xl" />
+        <div className="flex-1 space-y-2">
+          <Skeleton className="h-5 w-36" />
+          <Skeleton className="h-4 w-64" />
+        </div>
+      </div>
+      {/* Connection section */}
+      <div className="space-y-3">
+        <Skeleton className="h-3.5 w-32" />
+        <Skeleton className="h-3 w-20" />
+        <div className="rounded-lg border border-dashed p-6">
+          <Skeleton className="mx-auto h-9 w-28 rounded-lg" />
+        </div>
+      </div>
+      {/* Info sections */}
+      <div className="rounded-lg border bg-card p-4 space-y-3">
+        <Skeleton className="h-3.5 w-24" />
+        <div className="space-y-2">
+          <Skeleton className="h-4 w-56" />
+          <Skeleton className="h-4 w-64" />
+          <Skeleton className="h-4 w-48" />
+        </div>
+      </div>
+      {/* Tools */}
+      <div className="space-y-3">
+        <Skeleton className="h-3.5 w-32" />
+        <div className="rounded-lg border">
+          {Array.from({ length: 5 }).map((_, i) => (
+            <div
+              key={i}
+              className={cn("px-3 py-2.5 space-y-1.5", i > 0 && "border-t")}
+            >
+              <Skeleton className="h-3.5 w-32" />
+              <Skeleton className="h-3 w-56" />
+            </div>
+          ))}
+        </div>
       </div>
     </div>
+  );
+}
+
+function ConnectorToolsList({
+  tools,
+  isLoading,
+}: {
+  tools: any[];
+  isLoading: boolean;
+}) {
+  const [search, setSearch] = useState("");
+  const deferredSearch = useDeferredValue(search);
+
+  const filtered = useMemo(() => {
+    if (!deferredSearch.trim()) return tools;
+    const q = deferredSearch.trim().toLowerCase();
+    return tools.filter(
+      (t) =>
+        t.display_name?.toLowerCase().includes(q) ||
+        t.description?.toLowerCase().includes(q),
+    );
+  }, [tools, deferredSearch]);
+
+  if (isLoading) {
+    return (
+      <section>
+        <h2 className="mb-3 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+          Available Tools
+        </h2>
+        <div className="flex items-center justify-center py-6">
+          <Loader2 className="size-5 animate-spin text-muted-foreground" />
+        </div>
+      </section>
+    );
+  }
+
+  if (tools.length === 0) return null;
+
+  return (
+    <section>
+      <div className="mb-3 flex items-center justify-between gap-3">
+        <h2 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+          Available Tools{" "}
+          <span className="font-normal text-muted-foreground/60">
+            ({tools.length})
+          </span>
+        </h2>
+        {tools.length > 8 && (
+          <div className="relative w-48">
+            <Search className="absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" />
+            <input
+              type="text"
+              placeholder="Search..."
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              className="h-7 w-full rounded-md border border-input bg-background pl-8 pr-3 text-xs focus:outline-none focus:ring-2 focus:ring-ring"
+            />
+          </div>
+        )}
+      </div>
+      <div className="max-h-[32rem] overflow-y-auto rounded-lg border">
+        {filtered.map((tool, i) => (
+          <div
+            key={tool.name}
+            className={cn(
+              "flex items-start justify-between gap-3 px-3 py-2.5",
+              i > 0 && "border-t",
+            )}
+          >
+            <div className="min-w-0 flex-1">
+              <div className="flex items-center gap-2">
+                <span className="truncate text-sm font-medium">
+                  {tool.display_name}
+                </span>
+                {tool.is_deprecated && (
+                  <span className="shrink-0 rounded-full border px-1.5 py-0.5 text-[10px] text-muted-foreground">
+                    deprecated
+                  </span>
+                )}
+              </div>
+              {tool.description && (
+                <p className="mt-0.5 line-clamp-1 text-xs text-muted-foreground">
+                  {tool.description}
+                </p>
+              )}
+            </div>
+          </div>
+        ))}
+        {filtered.length === 0 && (
+          <p className="py-4 text-center text-sm text-muted-foreground">
+            No tools match your search.
+          </p>
+        )}
+      </div>
+    </section>
   );
 }

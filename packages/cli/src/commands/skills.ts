@@ -1,12 +1,12 @@
 import chalk from "chalk";
-import { existsSync, readFileSync, readdirSync } from "node:fs";
-import { createInterface } from "node:readline/promises";
-import { basename, join } from "node:path";
+import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
+import { basename, join, resolve } from "node:path";
 import { AGENT_LABELS } from "@clawdi-cloud/shared/consts";
 import { ClaudeCodeAdapter } from "../adapters/claude-code";
 import type { AgentAdapter } from "../adapters/base";
 import { ApiClient } from "../lib/api-client";
 import { getClawdiDir, isLoggedIn } from "../lib/config";
+import { tarSkillDir, tarSingleFile } from "../lib/tar-helpers";
 
 function requireAuth() {
 	if (!isLoggedIn()) {
@@ -22,7 +22,6 @@ function getRegisteredAdapters(): AgentAdapter[] {
 	const adapters: AgentAdapter[] = [];
 	for (const file of readdirSync(envDir)) {
 		if (file === "claude_code.json") adapters.push(new ClaudeCodeAdapter());
-		// Add other adapters as they are implemented
 	}
 	return adapters;
 }
@@ -39,27 +38,48 @@ export async function skillsList() {
 
 	for (const s of skills) {
 		const repo = s.source_repo ? chalk.gray(` (${s.source_repo})`) : "";
-		console.log(`  ${chalk.white(s.skill_key)}  v${s.version}  ${chalk.gray(s.source)}${repo}`);
+		const files = s.file_count ? chalk.gray(` ${s.file_count} files`) : "";
+		console.log(`  ${chalk.white(s.skill_key)}  v${s.version}  ${chalk.gray(s.source)}${repo}${files}`);
 	}
-	console.log(chalk.gray(`\n  ${skills.length} skills total`));
+	console.log(chalk.gray(`\n  ${skills.length} skill${skills.length === 1 ? "" : "s"} total`));
 }
 
 export async function skillsAdd(path: string) {
 	requireAuth();
-	const content = readFileSync(path, "utf-8");
-	const key = basename(path, ".md");
+	const resolved = resolve(path);
+	const stat = statSync(resolved);
 	const api = new ApiClient();
 
-	const result = await api.post<{ skill_key: string; version: number }>("/api/skills", {
-		skill_key: key,
-		name: key,
-		content,
-	});
+	let tarBytes: Buffer;
+	let skillKey: string;
 
-	console.log(chalk.green(`✓ Uploaded ${result.skill_key} (v${result.version})`));
+	if (stat.isDirectory()) {
+		const skillMdPath = join(resolved, "SKILL.md");
+		if (!existsSync(skillMdPath)) {
+			console.log(chalk.red("Directory must contain a SKILL.md"));
+			return;
+		}
+		skillKey = basename(resolved);
+		tarBytes = await tarSkillDir(resolved);
+	} else {
+		skillKey = basename(resolved, ".md");
+		const content = readFileSync(resolved, "utf-8");
+		tarBytes = await tarSingleFile(skillKey, content);
+	}
+
+	const result = await api.uploadFile<{ skill_key: string; version: number; file_count: number }>(
+		"/api/skills/upload",
+		{ skill_key: skillKey },
+		tarBytes,
+		`${skillKey}.tar.gz`,
+	);
+
+	console.log(chalk.green(`✓ Uploaded ${result.skill_key} (v${result.version}, ${result.file_count} files)`));
 }
 
 export async function skillsInstall(repoInput: string) {
+	requireAuth();
+
 	// Parse "owner/repo" or "owner/repo/path" or full GitHub URL
 	const parts = repoInput.replace(/^https?:\/\/github\.com\//, "").replace(/\/$/, "").split("/");
 	if (parts.length < 2) {
@@ -69,84 +89,35 @@ export async function skillsInstall(repoInput: string) {
 	const repo = `${parts[0]}/${parts[1]}`;
 	const path = parts.length > 2 ? parts.slice(2).join("/") : undefined;
 
-	// 1. Fetch SKILL.md from GitHub
 	console.log(chalk.cyan(`Fetching from ${repo}${path ? `/${path}` : ""}...`));
 
-	const searchPaths: string[] = [];
-	if (path) {
-		searchPaths.push(`skills/${path}/SKILL.md`);
-		searchPaths.push(`${path}/SKILL.md`);
-		searchPaths.push(`.claude/skills/${path}/SKILL.md`);
-	}
-	searchPaths.push("SKILL.md");
+	const api = new ApiClient();
 
-	let content: string | null = null;
-	for (const sp of searchPaths) {
-		for (const branch of ["main", "master"]) {
-			const url = `https://raw.githubusercontent.com/${repo}/refs/heads/${branch}/${sp}`;
-			const resp = await fetch(url);
-			if (resp.ok) {
-				content = await resp.text();
-				break;
-			}
-		}
-		if (content) break;
-	}
-
-	if (!content) {
-		console.log(chalk.red(`No SKILL.md found in ${repo}${path ? `/${path}` : ""}`));
+	// 1. Install via backend (fetches full directory, packages tar.gz)
+	let installResult: { skill_key: string; name: string; version: number; file_count: number };
+	try {
+		installResult = await api.post("/api/skills/install", { repo, path });
+	} catch (e: any) {
+		console.log(chalk.red(`Failed: ${e.message}`));
 		return;
 	}
 
-	// Parse frontmatter for name
-	const fmMatch = content.match(/^---\s*\n(.*?)\n---/s);
-	let skillName = path || repo.split("/")[1];
-	if (fmMatch) {
-		const nameLine = fmMatch[1].split("\n").find((l) => l.startsWith("name:"));
-		if (nameLine) skillName = nameLine.split(":").slice(1).join(":").trim();
-	}
-	const skillKey = skillName.toLowerCase().replace(/\s+/g, "-");
-
-	// 2. Write to registered agents' skill directories
+	// 2. Download tar.gz and extract to local agent directories
 	const adapters = getRegisteredAdapters();
-	if (adapters.length === 0) {
-		console.log(chalk.yellow("No agents registered. Run `clawdi setup` first."));
-		console.log(chalk.gray("Skill will only be saved to cloud."));
-	} else if (adapters.length === 1) {
-		// Single agent — install directly
-		const adapter = adapters[0];
-		await adapter.writeSkill(skillKey, content);
-		console.log(chalk.green(`  ✓ ${AGENT_LABELS[adapter.agentType]} → ${adapter.getSkillPath(skillKey)}`));
-	} else {
-		// Multiple agents — ask for each
-		const rl = createInterface({ input: process.stdin, output: process.stdout });
+	if (adapters.length > 0) {
 		try {
+			const tarBytes = await api.getBytes(`/api/skills/${installResult.skill_key}/download`);
+
 			for (const adapter of adapters) {
-				const answer = await rl.question(
-					chalk.cyan(`  Install to ${AGENT_LABELS[adapter.agentType]}? [Y/n] `),
-				);
-				if (answer.toLowerCase() !== "n") {
-					await adapter.writeSkill(skillKey, content);
-					console.log(chalk.green(`  ✓ ${AGENT_LABELS[adapter.agentType]} → ${adapter.getSkillPath(skillKey)}`));
-				}
+				await adapter.writeSkillArchive(installResult.skill_key, tarBytes);
+				console.log(chalk.green(`  ✓ ${AGENT_LABELS[adapter.agentType]} → ~/.claude/skills/${installResult.skill_key}/ (${installResult.file_count} files)`));
 			}
-		} finally {
-			rl.close();
+		} catch (e: any) {
+			console.log(chalk.yellow(`  ⚠ Local install failed: ${e.message}`));
 		}
 	}
 
-	// 3. Upload to cloud for cross-device sync
-	if (isLoggedIn()) {
-		try {
-			const api = new ApiClient();
-			await api.post("/api/skills/install", { repo, path });
-			console.log(chalk.green("  ✓ Synced to cloud"));
-		} catch {
-			console.log(chalk.yellow("  ⚠ Cloud sync failed (skill saved locally)"));
-		}
-	}
-
-	console.log(chalk.green(`\n✓ Installed ${skillName} from ${repo}`));
+	console.log(chalk.green(`\n✓ Installed ${installResult.name} (v${installResult.version}, ${installResult.file_count} files)`));
 }
 
 export async function skillsRm(key: string) {

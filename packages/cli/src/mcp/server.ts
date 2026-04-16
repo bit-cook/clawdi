@@ -1,7 +1,17 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
+import { z } from "zod";
 import { ApiClient } from "../lib/api-client";
 import { isLoggedIn } from "../lib/config";
+
+interface McpTool {
+	name: string;
+	description: string;
+	parameters?: {
+		properties: Record<string, any>;
+		required: string[];
+	};
+}
 
 export async function startMcpServer() {
 	if (!isLoggedIn()) {
@@ -11,12 +21,43 @@ export async function startMcpServer() {
 
 	const api = new ApiClient();
 
-	// Get MCP proxy config (Composio session URL + token)
+	// Get MCP proxy config
 	let mcpConfig: { mcp_url: string; mcp_token: string } | null = null;
 	try {
 		mcpConfig = await api.get("/api/connectors/mcp-config");
 	} catch {
-		process.stderr.write("Warning: Could not get MCP proxy config. Composio tools unavailable.\n");
+		process.stderr.write(
+			"Warning: Could not get MCP proxy config. Connector tools unavailable.\n",
+		);
+	}
+
+	// Fetch available tools from backend (user's connected apps)
+	let remoteTools: McpTool[] = [];
+	if (mcpConfig) {
+		try {
+			const resp = await fetch(mcpConfig.mcp_url, {
+				method: "POST",
+				headers: {
+					Authorization: `Bearer ${mcpConfig.mcp_token}`,
+					"Content-Type": "application/json",
+				},
+				body: JSON.stringify({
+					jsonrpc: "2.0",
+					id: 1,
+					method: "tools/list",
+					params: {},
+				}),
+			});
+			const result = await resp.json();
+			remoteTools = result.result?.tools ?? [];
+			process.stderr.write(
+				`Loaded ${remoteTools.length} connector tools.\n`,
+			);
+		} catch (e: any) {
+			process.stderr.write(
+				`Warning: Could not fetch connector tools: ${e.message}\n`,
+			);
+		}
 	}
 
 	const server = new McpServer({
@@ -24,32 +65,41 @@ export async function startMcpServer() {
 		version: "0.0.1",
 	});
 
-	// --- Clawdi native tools (direct API calls) ---
+	// --- Clawdi native tools ---
 
 	server.tool(
 		"memory_search",
 		"Search memories across all your agents",
 		{
-			query: { type: "string", description: "Search query" },
-			limit: { type: "number", description: "Max results (default 10)" },
+			query: z.string().describe("Search query"),
+			limit: z.number().optional().describe("Max results (default 10)"),
 		},
 		async ({ query, limit }) => {
 			try {
 				const results = await api.get<any[]>(
-					`/api/memories?q=${encodeURIComponent(query as string)}&limit=${limit ?? 10}`,
+					`/api/memories?q=${encodeURIComponent(query)}&limit=${limit ?? 10}`,
 				);
 				return {
 					content: [
 						{
 							type: "text" as const,
 							text: results.length
-								? results.map((m: any) => `[${m.category}] ${m.content}`).join("\n\n")
+								? results
+										.map(
+											(m: any) =>
+												`[${m.category}] ${m.content}`,
+										)
+										.join("\n\n")
 								: "No memories found.",
 						},
 					],
 				};
 			} catch (e: any) {
-				return { content: [{ type: "text" as const, text: `Error: ${e.message}` }] };
+				return {
+					content: [
+						{ type: "text" as const, text: `Error: ${e.message}` },
+					],
+				};
 			}
 		},
 	);
@@ -58,135 +108,148 @@ export async function startMcpServer() {
 		"memory_add",
 		"Store a memory for cross-agent recall",
 		{
-			content: { type: "string", description: "The memory content to store" },
-			category: {
-				type: "string",
-				description: "Category: fact, preference, pattern, decision, context",
-			},
+			content: z.string().describe("The memory content to store"),
+			category: z
+				.enum([
+					"fact",
+					"preference",
+					"pattern",
+					"decision",
+					"context",
+				])
+				.optional()
+				.describe("Category (default: fact)"),
 		},
 		async ({ content, category }) => {
 			try {
-				const result = await api.post<{ id: string }>("/api/memories", {
-					content,
-					category: category ?? "fact",
-				});
+				const result = await api.post<{ id: string }>(
+					"/api/memories",
+					{
+						content,
+						category: category ?? "fact",
+					},
+				);
 				return {
 					content: [
-						{ type: "text" as const, text: `Memory stored (${result.id.slice(0, 8)})` },
+						{
+							type: "text" as const,
+							text: `Memory stored (${result.id.slice(0, 8)})`,
+						},
 					],
 				};
 			} catch (e: any) {
-				return { content: [{ type: "text" as const, text: `Error: ${e.message}` }] };
+				return {
+					content: [
+						{ type: "text" as const, text: `Error: ${e.message}` },
+					],
+				};
 			}
 		},
 	);
 
-	// --- Composio connector tools (via backend MCP proxy) ---
+	// --- Dynamically registered connector tools (from Composio via backend) ---
 
-	if (mcpConfig) {
-		server.tool(
-			"connector_call",
-			"Call a connected service tool (GitHub, Gmail, Notion, etc.) via Composio. Use connector_list to see available tools first.",
-			{
-				tool_name: {
-					type: "string",
-					description:
-						"Composio tool name, e.g. GITHUB_LIST_ISSUES, GMAIL_SEND_EMAIL, NOTION_SEARCH_PAGES",
+	if (mcpConfig && remoteTools.length > 0) {
+		const callTool = async (
+			toolName: string,
+			args: Record<string, unknown>,
+		) => {
+			const resp = await fetch(mcpConfig!.mcp_url, {
+				method: "POST",
+				headers: {
+					Authorization: `Bearer ${mcpConfig!.mcp_token}`,
+					"Content-Type": "application/json",
 				},
-				arguments: {
-					type: "string",
-					description: "JSON string of tool arguments",
-				},
-			},
-			async ({ tool_name, arguments: args }) => {
-				try {
-					const rpcPayload = {
-						jsonrpc: "2.0",
-						id: Date.now(),
-						method: "tools/call",
-						params: {
-							name: tool_name,
-							arguments: args ? JSON.parse(args as string) : {},
-						},
-					};
+				body: JSON.stringify({
+					jsonrpc: "2.0",
+					id: Date.now(),
+					method: "tools/call",
+					params: { name: toolName, arguments: args },
+				}),
+			});
+			const result = await resp.json();
+			if (result.error) {
+				throw new Error(JSON.stringify(result.error));
+			}
+			return result.result ?? result;
+		};
 
-					const resp = await fetch(mcpConfig!.mcp_url, {
-						method: "POST",
-						headers: {
-							Authorization: `Bearer ${mcpConfig!.mcp_token}`,
-							"Content-Type": "application/json",
-						},
-						body: JSON.stringify(rpcPayload),
-					});
-
-					const result = await resp.json();
-					if (result.error) {
-						return {
-							content: [
-								{ type: "text" as const, text: `Error: ${JSON.stringify(result.error)}` },
-							],
-						};
+		for (const tool of remoteTools) {
+			// Build Zod schema from Composio parameter definitions
+			const schema: Record<string, z.ZodTypeAny> = {};
+			if (tool.parameters?.properties) {
+				for (const [key, prop] of Object.entries(tool.parameters.properties)) {
+					const desc = (prop as any).description || key;
+					const isRequired = tool.parameters.required?.includes(key);
+					let field: z.ZodTypeAny;
+					switch ((prop as any).type) {
+						case "integer":
+						case "number":
+							field = z.number().describe(desc);
+							break;
+						case "boolean":
+							field = z.boolean().describe(desc);
+							break;
+						case "array":
+							field = z.array(z.any()).describe(desc);
+							break;
+						case "object":
+							field = z.record(z.string(), z.any()).describe(desc);
+							break;
+						default:
+							field = z.string().describe(desc);
 					}
-					return {
-						content: [
-							{
-								type: "text" as const,
-								text: JSON.stringify(result.result ?? result, null, 2),
-							},
-						],
-					};
-				} catch (e: any) {
-					return { content: [{ type: "text" as const, text: `Error: ${e.message}` }] };
+					schema[key] = isRequired ? field : field.optional();
 				}
-			},
-		);
+			}
 
-		server.tool(
-			"connector_list",
-			"List available connector tools from your connected services",
-			{},
-			async () => {
-				try {
-					const rpcPayload = {
-						jsonrpc: "2.0",
-						id: Date.now(),
-						method: "tools/list",
-						params: {},
+			// Fallback: if no parameters, accept a generic JSON string
+			const hasSchema = Object.keys(schema).length > 0;
+			const toolSchema = hasSchema
+				? schema
+				: {
+						arguments: z
+							.string()
+							.optional()
+							.describe("JSON string of tool arguments"),
 					};
 
-					const resp = await fetch(mcpConfig!.mcp_url, {
-						method: "POST",
-						headers: {
-							Authorization: `Bearer ${mcpConfig!.mcp_token}`,
-							"Content-Type": "application/json",
-						},
-						body: JSON.stringify(rpcPayload),
-					});
-
-					const result = await resp.json();
-					const tools = result.result?.tools ?? [];
-					if (tools.length === 0) {
+			server.tool(
+				tool.name.toLowerCase(),
+				tool.description || tool.name,
+				toolSchema,
+				async (params) => {
+					try {
+						const args = hasSchema
+							? params
+							: (params as any).arguments
+								? JSON.parse((params as any).arguments)
+								: {};
+						const result = await callTool(tool.name, args as Record<string, unknown>);
 						return {
 							content: [
 								{
 									type: "text" as const,
-									text: "No connector tools available. Connect services in the Clawdi Cloud dashboard first.",
+									text:
+										typeof result === "string"
+											? result
+											: JSON.stringify(result, null, 2),
+								},
+							],
+						};
+					} catch (e: any) {
+						return {
+							content: [
+								{
+									type: "text" as const,
+									text: `Error: ${e.message}`,
 								},
 							],
 						};
 					}
-					const text = tools
-						.map(
-							(t: any) =>
-								`${t.name}: ${t.description?.slice(0, 100) ?? "No description"}`,
-						)
-						.join("\n");
-					return { content: [{ type: "text" as const, text }] };
-				} catch (e: any) {
-					return { content: [{ type: "text" as const, text: `Error: ${e.message}` }] };
-				}
-			},
-		);
+				},
+			);
+		}
 	}
 
 	const transport = new StdioServerTransport();

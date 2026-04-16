@@ -49,38 +49,10 @@ async def mcp_proxy_post(request: Request):
 
 async def _handle_tools_list(user_id: str) -> dict:
     """List available tools for the user's connected accounts."""
-    from starlette.concurrency import run_in_threadpool
+    from app.services.composio import get_connected_tools
 
-    client = get_composio_client()
-
-    def _list():
-        # Get user's connected accounts to determine available apps
-        accounts = client.connected_accounts.get(entity_ids=[user_id], active=True)
-        if not isinstance(accounts, list):
-            accounts = [accounts] if accounts else []
-
-        app_names = list(set(a.appName for a in accounts if a.appName))
-        if not app_names:
-            return {"tools": []}
-
-        # Get tools for connected apps
-        tools = []
-        for app_name in app_names:
-            try:
-                app_tools = client.actions.get(apps=[app_name])
-                if not isinstance(app_tools, list):
-                    app_tools = [app_tools] if app_tools else []
-                for t in app_tools:
-                    tools.append({
-                        "name": t.name if hasattr(t, "name") else str(t),
-                        "description": getattr(t, "description", "")[:200],
-                    })
-            except Exception as e:
-                logger.warning(f"Failed to list tools for {app_name}: {e}")
-
-        return {"tools": tools}
-
-    return await run_in_threadpool(_list)
+    tools = await get_connected_tools(user_id)
+    return {"tools": [{"name": t["name"], "description": t["description"]} for t in tools]}
 
 
 async def _handle_tools_call(user_id: str, params: dict) -> dict:
@@ -96,10 +68,31 @@ async def _handle_tools_call(user_id: str, params: dict) -> dict:
     client = get_composio_client()
 
     def _call():
+        # Find user's connected account for this tool's app
+        accounts = client.connected_accounts.get(entity_ids=[user_id], active=True)
+        if not isinstance(accounts, list):
+            accounts = [accounts] if accounts else []
+
+        # Resolve the Action enum and find matching connected account
+        from composio.client import Action
+        action = Action(tool_name)
+        action_data = action.load()
+        app_name = action_data.app
+
+        connected_account_id = None
+        for acc in accounts:
+            if acc.appName and acc.appName.lower() == app_name.lower():
+                connected_account_id = str(acc.id)
+                break
+
+        if not connected_account_id and not action_data.no_auth:
+            raise ValueError(f"No connected account for {app_name}. Connect it in the dashboard first.")
+
         result = client.actions.execute(
-            action=tool_name,
+            action=action,
             params=arguments,
             entity_id=user_id,
+            connected_account=connected_account_id,
         )
         return result
 

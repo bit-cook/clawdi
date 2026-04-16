@@ -7,8 +7,10 @@ from app.services.composio import (
     create_connect_link,
     create_proxy_token,
     disconnect_account,
+    get_app_tools,
     get_available_apps,
     get_connected_accounts,
+    get_connected_tools,
 )
 
 router = APIRouter(prefix="/api/connectors", tags=["connectors"])
@@ -65,6 +67,15 @@ async def disconnect(
     return {"status": "disconnected"}
 
 
+@router.get("/connected-tools")
+async def list_connected_tools(auth: AuthContext = Depends(get_auth)):
+    """List all tools from user's active connected apps."""
+    if not settings.composio_api_key:
+        return []
+    tools = await get_connected_tools(str(auth.user_id))
+    return tools
+
+
 @router.get("/mcp-config")
 async def get_mcp_config(auth: AuthContext = Depends(get_auth)):
     """Get MCP proxy config for the current user."""
@@ -78,3 +89,15 @@ async def get_mcp_config(auth: AuthContext = Depends(get_auth)):
         "mcp_url": f"http://localhost:8000/api/mcp/proxy",
         "mcp_token": token,
     }
+
+
+@router.get("/{app_name}/tools")
+async def list_app_tools(
+    app_name: str,
+    auth: AuthContext = Depends(get_auth),
+):
+    """List available tools/actions for a specific app."""
+    if not settings.composio_api_key:
+        return []
+    tools = await get_app_tools(app_name)
+    return tools
