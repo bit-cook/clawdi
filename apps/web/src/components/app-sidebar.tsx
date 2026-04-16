@@ -2,6 +2,7 @@
 
 import {
   BarChart3,
+  Brain,
   ChevronUp,
   Clock,
   Key,
@@ -27,6 +28,7 @@ import { SettingsDialog } from "@/components/settings-dialog";
 const navItems = [
   { href: "/", label: "Overview", icon: LayoutDashboard },
   { href: "/sessions", label: "Sessions", icon: BarChart3 },
+  { href: "/memories", label: "Memories", icon: Brain },
   { href: "/skills", label: "Skills", icon: Sparkles },
   { href: "/vault", label: "Vault", icon: Key },
   { href: "/connectors", label: "Connectors", icon: Plug },

@@ -92,6 +92,66 @@ vaultCmd
 		await vaultImport(file);
 	});
 
+const skillsCmd = program.command("skills").description("Manage skills");
+
+skillsCmd
+	.command("list")
+	.description("List synced skills")
+	.action(async () => {
+		const { skillsList } = await import("./commands/skills.js");
+		await skillsList();
+	});
+
+skillsCmd
+	.command("add <path>")
+	.description("Upload a skill file")
+	.action(async (path) => {
+		const { skillsAdd } = await import("./commands/skills.js");
+		await skillsAdd(path);
+	});
+
+skillsCmd
+	.command("rm <key>")
+	.description("Remove a skill")
+	.action(async (key) => {
+		const { skillsRm } = await import("./commands/skills.js");
+		await skillsRm(key);
+	});
+
+const memoriesCmd = program.command("memories").description("Manage memories");
+
+memoriesCmd
+	.command("list")
+	.description("List memories")
+	.action(async () => {
+		const { memoriesList } = await import("./commands/memories.js");
+		await memoriesList();
+	});
+
+memoriesCmd
+	.command("search <query>")
+	.description("Search memories")
+	.action(async (query) => {
+		const { memoriesSearch } = await import("./commands/memories.js");
+		await memoriesSearch(query);
+	});
+
+memoriesCmd
+	.command("add <content>")
+	.description("Add a memory")
+	.action(async (content) => {
+		const { memoriesAdd } = await import("./commands/memories.js");
+		await memoriesAdd(content);
+	});
+
+memoriesCmd
+	.command("rm <id>")
+	.description("Delete a memory")
+	.action(async (id) => {
+		const { memoriesRm } = await import("./commands/memories.js");
+		await memoriesRm(id);
+	});
+
 program
 	.command("run")
 	.description("Run a command with vault secrets injected")

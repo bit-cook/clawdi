@@ -152,8 +152,8 @@ export async function syncDown(opts: { modules?: string; dryRun?: boolean }) {
 	if (modules.includes("skills")) {
 		console.log(chalk.cyan("Pulling skills from cloud..."));
 		try {
-			const skills = await api.get<Array<{ skill_key: string; name: string; content: string }>>(
-				"/api/skills",
+			const skills = await api.get<Array<{ skill_key: string; name: string; content?: string }>>(
+				"/api/skills?include_content=true",
 			);
 
 			if (skills.length === 0) {
