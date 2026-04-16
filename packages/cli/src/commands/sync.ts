@@ -24,6 +24,9 @@ function saveSyncState(state: SyncState) {
 	writeFileSync(path, JSON.stringify(state, null, 2) + "\n", { mode: 0o600 });
 }
 
+const DEFAULT_UP_MODULES = ["sessions", "skills"];
+const DEFAULT_DOWN_MODULES = ["skills"];
+
 export async function syncUp(opts: { modules?: string; since?: string; project?: string; all?: boolean; dryRun?: boolean }) {
 	if (!opts.dryRun && !isLoggedIn()) {
 		console.log(chalk.red("Not logged in. Run `clawdi login` first."));
@@ -43,7 +46,7 @@ export async function syncUp(opts: { modules?: string; since?: string; project?:
 		return;
 	}
 
-	const modules = opts.modules?.split(",") ?? ["sessions"];
+	const modules = opts.modules?.split(",") ?? DEFAULT_UP_MODULES;
 	const syncState = getSyncState();
 	const api = opts.dryRun ? null : new ApiClient();
 
@@ -146,7 +149,7 @@ export async function syncDown(opts: { modules?: string; dryRun?: boolean }) {
 		return;
 	}
 
-	const modules = opts.modules?.split(",") ?? ["skills"];
+	const modules = opts.modules?.split(",") ?? DEFAULT_DOWN_MODULES;
 	const api = new ApiClient();
 	const adapter = new ClaudeCodeAdapter();
 
