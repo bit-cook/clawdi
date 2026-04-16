@@ -165,7 +165,7 @@ export default function ConnectorsPage() {
                 <div
                   key={app.name}
                   className={cn(
-                    "group flex h-[72px] items-center gap-3 rounded-xl border bg-card px-3 transition-all hover:border-foreground/15 hover:bg-accent/40",
+                    "group flex h-[72px] items-center gap-3 rounded-xl border bg-card px-3 transition-all hover:border-border hover:shadow-sm",
                     isConnected && "border-primary/20",
                   )}
                 >
