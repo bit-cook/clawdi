@@ -68,6 +68,11 @@ export default function SessionsPage() {
                   {s.summary || s.local_session_id.slice(0, 8)}
                 </div>
                 <div className="flex items-center gap-2 mt-0.5">
+                  {s.agent_type && (
+                    <span className="text-[10px] rounded bg-primary/10 px-1.5 py-0.5 text-primary font-medium">
+                      {s.agent_type === "claude_code" ? "Claude Code" : s.agent_type === "hermes" ? "Hermes" : s.agent_type}
+                    </span>
+                  )}
                   <span className="text-xs text-muted-foreground">
                     {s.project_path?.split("/").pop() ?? "-"}
                   </span>

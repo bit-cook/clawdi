@@ -97,6 +97,11 @@ export default function SessionDetailPage() {
 
       {/* Stats bar */}
       <div className="flex flex-wrap items-center gap-3">
+        {session.agent_type && (
+          <span className="inline-flex items-center rounded-full bg-muted px-2.5 py-0.5 text-xs font-medium">
+            {session.agent_type === "claude_code" ? "Claude Code" : session.agent_type === "hermes" ? "Hermes" : session.agent_type}
+          </span>
+        )}
         {session.model && (
           <span className="inline-flex items-center gap-1 rounded-full bg-primary/10 px-2.5 py-0.5 text-xs font-medium text-primary">
             {session.model.replace("claude-", "")}
@@ -125,6 +130,11 @@ export default function SessionDetailPage() {
                 message={msg}
                 userAvatar={user?.imageUrl}
                 userName={user?.fullName || "You"}
+                agentName={
+                  session.agent_type === "hermes" ? "Hermes"
+                  : session.agent_type === "claude_code" ? "Claude"
+                  : "AI"
+                }
               />
             ))}
           </div>
@@ -173,10 +183,12 @@ function MessageBlock({
   message,
   userAvatar,
   userName,
+  agentName,
 }: {
   message: SessionMessage;
   userAvatar?: string;
   userName: string;
+  agentName: string;
 }) {
   const isUser = message.role === "user";
 
@@ -204,7 +216,7 @@ function MessageBlock({
         {/* Author line */}
         <div className="flex items-center gap-2 mb-1">
           <span className="text-sm font-medium">
-            {isUser ? userName : "Claude"}
+            {isUser ? userName : agentName}
           </span>
           {!isUser && message.model && (
             <span className="text-[10px] rounded bg-muted px-1.5 py-0.5 text-muted-foreground">

@@ -21,10 +21,16 @@ export async function startMcpServer() {
 
 	const api = new ApiClient();
 
-	// Get MCP proxy config
+	// Get MCP proxy config — override mcp_url with local apiUrl
+	const { getConfig } = await import("../lib/config");
+	const cliConfig = getConfig();
 	let mcpConfig: { mcp_url: string; mcp_token: string } | null = null;
 	try {
-		mcpConfig = await api.get("/api/connectors/mcp-config");
+		const raw = await api.get<{ mcp_url: string; mcp_token: string }>("/api/connectors/mcp-config");
+		// Backend returns localhost URL which may not work in containers;
+		// use the CLI's configured apiUrl instead
+		raw.mcp_url = `${cliConfig.apiUrl}/api/mcp/proxy`;
+		mcpConfig = raw;
 	} catch {
 		process.stderr.write(
 			"Warning: Could not get MCP proxy config. Connector tools unavailable.\n",

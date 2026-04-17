@@ -7,11 +7,12 @@ import { writeFileSync, mkdirSync, cpSync, existsSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { AGENT_TYPES, AGENT_LABELS, type AgentType } from "@clawdi-cloud/shared/consts";
 import { ClaudeCodeAdapter } from "../adapters/claude-code";
+import { HermesAdapter } from "../adapters/hermes";
 import type { AgentAdapter } from "../adapters/base";
 import { ApiClient } from "../lib/api-client";
 import { getClawdiDir, isLoggedIn } from "../lib/config";
 
-const allAdapters: AgentAdapter[] = [new ClaudeCodeAdapter()];
+const allAdapters: AgentAdapter[] = [new ClaudeCodeAdapter(), new HermesAdapter()];
 
 export async function setup(opts: { agent?: string }) {
 	if (!isLoggedIn()) {
@@ -116,19 +117,32 @@ async function registerEnv(
 }
 
 async function installBuiltinSkill(agentType: AgentType) {
-	if (agentType !== "claude_code") return;
-
 	const homedir = (await import("node:os")).homedir();
-	const targetDir = join(homedir, ".claude", "skills", "clawdi");
-	const sourceDir = resolve(import.meta.dirname, "../../skills/clawdi");
-	const targetSkillMd = join(targetDir, "SKILL.md");
 
+	let targetDir: string;
+	let label: string;
+	if (agentType === "claude_code") {
+		targetDir = join(homedir, ".claude", "skills", "clawdi");
+		label = "Claude Code";
+	} else if (agentType === "hermes") {
+		const hermesHome = process.env.HERMES_HOME || join(homedir, ".hermes");
+		targetDir = join(hermesHome, "skills", "clawdi");
+		label = "Hermes";
+	} else {
+		return;
+	}
+
+	// Support both dev (src/commands/) and build (dist/) paths
+	let sourceDir = resolve(import.meta.dirname, "../../skills/clawdi");
+	if (!existsSync(sourceDir)) {
+		sourceDir = resolve(import.meta.dirname, "skills/clawdi");
+	}
 	if (!existsSync(sourceDir)) {
 		console.log(chalk.yellow("⚠ Built-in skill not found, skipping."));
 		return;
 	}
 
-	if (existsSync(targetSkillMd)) {
+	if (existsSync(join(targetDir, "SKILL.md"))) {
 		console.log(chalk.gray("✓ Clawdi skill already installed"));
 		return;
 	}
@@ -136,13 +150,16 @@ async function installBuiltinSkill(agentType: AgentType) {
 	try {
 		mkdirSync(targetDir, { recursive: true });
 		cpSync(sourceDir, targetDir, { recursive: true });
-		console.log(chalk.green("✓ Clawdi skill installed in Claude Code"));
+		console.log(chalk.green(`✓ Clawdi skill installed in ${label}`));
 	} catch {
 		console.log(chalk.yellow("⚠ Could not install Clawdi skill."));
 	}
 }
 
 async function registerMcpServer(agentType: AgentType) {
+	if (agentType === "hermes") {
+		return registerHermesMcp();
+	}
 	if (agentType !== "claude_code") return;
 
 	// Check if already registered
@@ -171,5 +188,50 @@ async function registerMcpServer(agentType: AgentType) {
 	} catch {
 		console.log(chalk.yellow("⚠ Could not auto-register MCP server."));
 		console.log(chalk.gray(`  Run manually: claude mcp add-json clawdi '${mcpConfig}' --scope user`));
+	}
+}
+
+async function registerHermesMcp() {
+	const homedir = (await import("node:os")).homedir();
+	const hermesHome = process.env.HERMES_HOME || join(homedir, ".hermes");
+	const configPath = join(hermesHome, "config.yaml");
+
+	if (!existsSync(configPath)) {
+		console.log(chalk.yellow("⚠ Hermes config.yaml not found, skipping MCP registration."));
+		return;
+	}
+
+	const { readFileSync: readFs, writeFileSync: writeFs } = await import("node:fs");
+	const content = readFs(configPath, "utf-8");
+
+	// Check if clawdi MCP is already configured
+	if (content.includes("clawdi:") && content.includes("mcp_servers")) {
+		console.log(chalk.gray("✓ MCP server already registered in Hermes"));
+		return;
+	}
+
+	// Append clawdi MCP server config
+	const mcpBlock = `
+mcp_servers:
+  clawdi:
+    command: "clawdi"
+    args: ["mcp"]
+`;
+
+	try {
+		if (content.includes("mcp_servers:")) {
+			// Replace mcp_servers line (handles both "mcp_servers: {}" and "mcp_servers:\n")
+			const updated = content.replace(
+				/^mcp_servers:.*$/m,
+				`mcp_servers:\n  clawdi:\n    command: "clawdi"\n    args: ["mcp"]`,
+			);
+			writeFs(configPath, updated);
+		} else {
+			// Append new section
+			writeFs(configPath, content.trimEnd() + "\n" + mcpBlock);
+		}
+		console.log(chalk.green("✓ MCP server registered in Hermes"));
+	} catch {
+		console.log(chalk.yellow("⚠ Could not register MCP server in Hermes config."));
 	}
 }

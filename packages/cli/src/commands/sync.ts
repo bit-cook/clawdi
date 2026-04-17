@@ -3,8 +3,9 @@ import chalk from "chalk";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { SyncState } from "@clawdi-cloud/shared/types";
+import type { AgentAdapter, RawSession, RawSkill } from "../adapters/base";
 import { ClaudeCodeAdapter } from "../adapters/claude-code";
-import type { RawSession, RawSkill } from "../adapters/base";
+import { HermesAdapter } from "../adapters/hermes";
 import { ApiClient } from "../lib/api-client";
 import { getClawdiDir, isLoggedIn } from "../lib/config";
 import { tarSkillDir } from "../lib/tar-helpers";
@@ -47,9 +48,13 @@ export async function syncUp(opts: {
 		return;
 	}
 
-	const adapter = new ClaudeCodeAdapter();
-	if (!(await adapter.detect())) {
-		console.log(chalk.red("Claude Code not detected on this machine."));
+	const allAdapters: AgentAdapter[] = [new ClaudeCodeAdapter(), new HermesAdapter()];
+	const adapter = (await Promise.all(
+		allAdapters.map(async (a) => ((await a.detect()) ? a : null)),
+	)).find(Boolean);
+
+	if (!adapter) {
+		console.log(chalk.red("No supported agent detected on this machine."));
 		return;
 	}
 
@@ -217,7 +222,16 @@ export async function syncDown(opts: { modules?: string; dryRun?: boolean }) {
 		return;
 	}
 
-	const adapter = new ClaudeCodeAdapter();
+	const allAdapters: AgentAdapter[] = [new ClaudeCodeAdapter(), new HermesAdapter()];
+	const adapter = (await Promise.all(
+		allAdapters.map(async (a) => ((await a.detect()) ? a : null)),
+	)).find(Boolean);
+
+	if (!adapter) {
+		console.log(chalk.red("No supported agent detected on this machine."));
+		return;
+	}
+
 	const api = new ApiClient();
 
 	// 1. Select modules

@@ -131,14 +131,17 @@ async def list_sessions(
     offset: int = Query(default=0),
     since: datetime | None = Query(default=None),
 ):
-    q = select(Session).where(Session.user_id == auth.user_id)
+    q = (
+        select(Session, AgentEnvironment.agent_type)
+        .outerjoin(AgentEnvironment, Session.environment_id == AgentEnvironment.id)
+        .where(Session.user_id == auth.user_id)
+    )
     if since:
         q = q.where(Session.started_at >= since)
     q = q.order_by(Session.started_at.desc()).limit(limit).offset(offset)
 
     result = await db.execute(q)
-    sessions = result.scalars().all()
-    return [_session_to_dict(s) for s in sessions]
+    return [_session_to_dict(s, agent_type) for s, agent_type in result.all()]
 
 
 @router.get("/api/sessions/{session_id}")
@@ -148,16 +151,19 @@ async def get_session_detail(
     db: AsyncSession = Depends(get_session),
 ):
     result = await db.execute(
-        select(Session).where(
+        select(Session, AgentEnvironment.agent_type)
+        .outerjoin(AgentEnvironment, Session.environment_id == AgentEnvironment.id)
+        .where(
             Session.user_id == auth.user_id,
             Session.id == uuid.UUID(session_id),
         )
     )
-    session = result.scalar_one_or_none()
-    if not session:
+    row = result.first()
+    if not row:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Session not found")
 
-    data = _session_to_dict(session)
+    session, agent_type = row
+    data = _session_to_dict(session, agent_type)
     data["has_content"] = bool(session.file_key)
     return data
 
@@ -218,11 +224,12 @@ async def get_session_content(
     return Response(content=data, media_type="application/json")
 
 
-def _session_to_dict(s: Session) -> dict:
+def _session_to_dict(s: Session, agent_type: str | None = None) -> dict:
     return {
         "id": str(s.id),
         "local_session_id": s.local_session_id,
         "project_path": s.project_path,
+        "agent_type": agent_type,
         "started_at": s.started_at.isoformat(),
         "ended_at": s.ended_at.isoformat() if s.ended_at else None,
         "duration_seconds": s.duration_seconds,
