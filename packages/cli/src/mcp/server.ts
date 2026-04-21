@@ -75,10 +75,17 @@ export async function startMcpServer() {
 
 	server.tool(
 		"memory_search",
-		"Search memories across all your agents",
+		"Search the user's long-term memory across all their agents for prior context — facts, preferences, decisions, patterns, past work, personal details. Call this PROACTIVELY at the START of any task whenever the user mentions a person, place, project, repo, technology, past issue, or their own preference — even when they don't explicitly ask to search memory. Also call it when the user says things like 'as I mentioned', 'like last time', 'you know', or references something by name. Do NOT call for generic programming questions with no user-specific context.",
 		{
-			query: z.string().describe("Search query"),
-			limit: z.number().optional().describe("Max results (default 10)"),
+			query: z
+				.string()
+				.describe(
+					"Natural-language query or entity name. Examples: \"user's name\", \"coding style preference\", \"how we fixed the login bug\", \"deployment pipeline\", \"what editor does the user prefer\".",
+				),
+			limit: z
+				.number()
+				.optional()
+				.describe("Max results (default 10)."),
 		},
 		async ({ query, limit }) => {
 			try {
@@ -112,9 +119,13 @@ export async function startMcpServer() {
 
 	server.tool(
 		"memory_add",
-		"Store a memory for cross-agent recall",
+		"Store a durable memory for cross-agent recall. Use AFTER you learn something non-obvious about the user or their project that a future session would benefit from knowing: a preference they expressed, a non-trivial bug you fixed with its root cause, an architecture decision and its reasoning, a recurring pattern or team convention, or when the user explicitly says 'remember this'. Do NOT save trivia obvious from the code, or generic programming facts.",
 		{
-			content: z.string().describe("The memory content to store"),
+			content: z
+				.string()
+				.describe(
+					"The memory content. Write it as a standalone sentence that makes sense in isolation (include names/context, not just pronouns). Examples: \"The user prefers rg over grep and fd over find.\", \"We chose Clerk over Auth0 because the team already had a Clerk account.\", \"The login bug on 2026-04-15 was caused by a stale JWT cache in the middleware.\"",
+				),
 			category: z
 				.enum([
 					"fact",
@@ -124,7 +135,9 @@ export async function startMcpServer() {
 					"context",
 				])
 				.optional()
-				.describe("Category (default: fact)"),
+				.describe(
+					"fact — technical facts, API details, config values. preference — user preferences, coding style, workflow choices. pattern — recurring patterns, pitfalls, team conventions. decision — architecture decisions and their reasoning. context — project context, deadlines, ongoing work. Default: fact.",
+				),
 		},
 		async ({ content, category }) => {
 			try {

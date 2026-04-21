@@ -2,14 +2,19 @@
 
 from __future__ import annotations
 
+import logging
+import re
 import uuid
 from datetime import datetime, timezone
 from typing import Protocol
 
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.memory import Memory
+from app.services.embedding import Embedder, resolve_embedder
+
+log = logging.getLogger(__name__)
 
 
 class MemoryResult:
@@ -39,7 +44,8 @@ class MemoryProvider(Protocol):
     async def add(self, user_id: str, content: str, category: str = "fact",
                   source: str = "manual", tags: list[str] | None = None) -> dict: ...
 
-    async def search(self, user_id: str, query: str, limit: int = 50) -> list[dict]: ...
+    async def search(self, user_id: str, query: str, limit: int = 50,
+                     category: str | None = None) -> list[dict]: ...
 
     async def list_all(self, user_id: str, limit: int = 50, offset: int = 0,
                        category: str | None = None) -> list[dict]: ...
@@ -48,34 +54,121 @@ class MemoryProvider(Protocol):
 
 
 class BuiltinProvider:
-    """Memory provider backed by PostgreSQL."""
+    """Memory provider backed by PostgreSQL.
 
-    def __init__(self, db: AsyncSession):
+    Adaptive: FTS (tsvector + ts_rank) + pg_trgm fuzzy is always on.
+    When an `Embedder` is supplied, also does pgvector similarity search
+    and merges results with temporal decay and MMR-style diversity rerank.
+    """
+
+    def __init__(self, db: AsyncSession, embedder: Embedder | None = None):
         self.db = db
+        self.embedder = embedder
 
     async def add(self, user_id: str, content: str, category: str = "fact",
                   source: str = "manual", tags: list[str] | None = None) -> dict:
+        vec: list[float] | None = None
+        if self.embedder is not None:
+            try:
+                vec = await self.embedder.embed(content)
+            except Exception as e:
+                # Embedding is a nice-to-have on the write path — if the
+                # embedder fails, store the memory anyway so the user's
+                # write isn't silently dropped. Future search will fall
+                # back to FTS/trigram for this row.
+                log.warning("embedder failed at add-time, storing without: %s", e)
         memory = Memory(
             user_id=uuid.UUID(user_id),
             content=content,
             category=category,
             source=source,
             tags=tags,
+            embedding=vec,
         )
         self.db.add(memory)
         await self.db.commit()
         await self.db.refresh(memory)
         return {"id": str(memory.id)}
 
-    async def search(self, user_id: str, query: str, limit: int = 50) -> list[dict]:
-        q = (
-            select(Memory)
-            .where(Memory.user_id == uuid.UUID(user_id), Memory.content.ilike(f"%{query}%"))
-            .order_by(Memory.created_at.desc())
+    async def search(self, user_id: str, query: str, limit: int = 50,
+                     category: str | None = None) -> list[dict]:
+        fts_rows = await self._search_fts(user_id, query, limit, category)
+        if self.embedder is None:
+            return [_strip_scores(r) for r in fts_rows]
+
+        try:
+            vec_rows = await self._search_vector(user_id, query, limit, category)
+        except Exception as e:
+            log.warning("vector search failed, using FTS-only: %s", e)
+            return [_strip_scores(r) for r in fts_rows]
+
+        merged = _merge_hybrid(vec_rows, fts_rows, limit)
+        return [_strip_scores(r) for r in merged]
+
+    async def _search_fts(self, user_id: str, query: str, limit: int,
+                          category: str | None) -> list[dict]:
+        """FTS + trigram hybrid with strict/relaxed score floor.
+
+        Internal rows keep `combined_score` for downstream merge.
+        """
+        params = {
+            "uid": uuid.UUID(user_id), "q": query,
+            "pattern": f"%{query}%", "cat": category, "lim": limit,
+        }
+        sql = text("""
+            WITH candidates AS (
+              SELECT m.*,
+                     ts_rank_cd(content_tsv, websearch_to_tsquery('simple', :q)) AS fts_score,
+                     similarity(content, :q) AS trg_score
+              FROM memories m
+              WHERE user_id = :uid
+                AND (CAST(:cat AS text) IS NULL OR category = :cat)
+                AND (
+                  content_tsv @@ websearch_to_tsquery('simple', :q)
+                  OR similarity(content, :q) > 0.1
+                  OR content ILIKE :pattern
+                )
+            )
+            SELECT *,
+                   (COALESCE(fts_score, 0) * 1.0
+                    + COALESCE(trg_score, 0) * 0.5) AS combined_score
+            FROM candidates
+            WHERE (COALESCE(fts_score, 0) * 1.0 + COALESCE(trg_score, 0) * 0.5) >= :min_score
+            ORDER BY combined_score DESC, created_at DESC
+            LIMIT :lim
+        """)
+        rows = (await self.db.execute(sql, {**params, "min_score": 0.05})).mappings().all()
+        if not rows:
+            rows = (await self.db.execute(sql, {**params, "min_score": 0.0})).mappings().all()
+        return [_row_to_search_dict(r, score_key="combined_score") for r in rows]
+
+    async def _search_vector(self, user_id: str, query: str, limit: int,
+                             category: str | None) -> list[dict]:
+        """pgvector cosine-distance nearest neighbors among rows with embeddings."""
+        q_vec = await self.embedder.embed(query)
+        # Use pgvector's SQLAlchemy integration on Memory.embedding column.
+        distance = Memory.embedding.cosine_distance(q_vec)
+        stmt = (
+            select(Memory, distance.label("distance"))
+            .where(
+                Memory.user_id == uuid.UUID(user_id),
+                Memory.embedding.is_not(None),
+            )
+            .order_by(distance)
             .limit(limit)
         )
-        result = await self.db.execute(q)
-        return [_memory_to_dict(m) for m in result.scalars().all()]
+        if category:
+            stmt = stmt.where(Memory.category == category)
+        rows = (await self.db.execute(stmt)).all()
+        out: list[dict] = []
+        for mem, dist in rows:
+            d = _memory_to_dict(mem)
+            # cosine distance ∈ [0, 2]; convert to similarity ∈ [-1, 1]
+            # clamped to [0, 1] for our weighted merge.
+            sim = max(0.0, 1.0 - float(dist))
+            d["vector_score"] = sim
+            out.append(d)
+        return out
 
     async def list_all(self, user_id: str, limit: int = 50, offset: int = 0,
                        category: str | None = None) -> list[dict]:
@@ -116,19 +209,26 @@ class Mem0Provider:
         mem_id = result[0]["id"] if result else str(uuid.uuid4())
         return {"id": mem_id}
 
-    async def search(self, user_id: str, query: str, limit: int = 50) -> list[dict]:
+    async def search(self, user_id: str, query: str, limit: int = 50,
+                     category: str | None = None) -> list[dict]:
         results = self.client.search(query, user_id=user_id, limit=limit)
-        return [
-            {
+        items = results.get("results", results) if isinstance(results, dict) else results
+        out = []
+        for r in items:
+            if not isinstance(r, dict):
+                continue
+            meta = r.get("metadata", {}) or {}
+            if category and meta.get("category") != category:
+                continue
+            out.append({
                 "id": r.get("id", ""),
                 "content": r.get("memory", ""),
-                "category": r.get("metadata", {}).get("category", "fact"),
+                "category": meta.get("category", "fact"),
                 "source": "mem0",
-                "tags": r.get("metadata", {}).get("tags"),
+                "tags": meta.get("tags"),
                 "created_at": r.get("created_at", ""),
-            }
-            for r in results.get("results", results) if isinstance(r, dict)
-        ]
+            })
+        return out
 
     async def list_all(self, user_id: str, limit: int = 50, offset: int = 0,
                        category: str | None = None) -> list[dict]:
@@ -152,6 +252,9 @@ class Mem0Provider:
         self.client.delete(memory_id)
 
 
+# ---------- helpers ----------
+
+
 def _memory_to_dict(m: Memory) -> dict:
     return {
         "id": str(m.id),
@@ -164,22 +267,168 @@ def _memory_to_dict(m: Memory) -> dict:
     }
 
 
+def _row_to_dict(r) -> dict:
+    """Serialize a raw SQL row (SQLAlchemy RowMapping) to the API shape."""
+    created_at = r["created_at"]
+    return {
+        "id": str(r["id"]),
+        "content": r["content"],
+        "category": r["category"],
+        "source": r["source"],
+        "tags": r["tags"],
+        "access_count": r["access_count"],
+        "created_at": created_at.isoformat() if hasattr(created_at, "isoformat") else created_at,
+    }
+
+
+def _row_to_search_dict(r, score_key: str) -> dict:
+    """Like `_row_to_dict` but preserves an internal score field for merging."""
+    d = _row_to_dict(r)
+    val = r.get(score_key) if hasattr(r, "get") else None
+    if val is not None:
+        d[score_key] = float(val)
+    return d
+
+
+def _strip_scores(d: dict) -> dict:
+    """Remove internal score fields before returning to the client."""
+    return {k: v for k, v in d.items() if k not in ("combined_score", "vector_score")}
+
+
+# --- hybrid merge: vector + FTS, with temporal decay and MMR rerank ---
+
+
+def _tokenize(s: str) -> set[str]:
+    return {t for t in re.split(r"\W+", (s or "").lower()) if len(t) > 2}
+
+
+def _jaccard(a: set[str], b: set[str]) -> float:
+    if not a or not b:
+        return 0.0
+    return len(a & b) / len(a | b)
+
+
+def _parse_ts(v) -> datetime | None:
+    if isinstance(v, datetime):
+        return v if v.tzinfo else v.replace(tzinfo=timezone.utc)
+    if isinstance(v, str):
+        try:
+            return datetime.fromisoformat(v.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+    return None
+
+
+def _apply_temporal_decay(
+    scores: dict,
+    rows_by_id: dict,
+    half_life_days: float = 30.0,
+) -> None:
+    """Halve each score every `half_life_days`. In-place mutation.
+
+    OpenClaw's `temporal-decay.ts` formula: e^(-ln(2)/halflife * age).
+    """
+    now = datetime.now(timezone.utc)
+    for rid, r in rows_by_id.items():
+        created_at = _parse_ts(r.get("created_at"))
+        if created_at is None:
+            continue
+        age_days = max(0.0, (now - created_at).total_seconds() / 86400.0)
+        scores[rid] *= 0.5 ** (age_days / half_life_days)
+
+
+def _mmr_rerank(
+    candidates: list[dict],
+    scores: dict,
+    limit: int,
+    lam: float = 0.7,
+) -> list[dict]:
+    """Greedy MMR (Carbonell & Goldstein, 1998) on Jaccard token similarity.
+
+    λ=0.7 relevance / 0.3 diversity. Uses content tokens so no extra
+    embedding calls are needed to compute diversity.
+    """
+    picked: list[dict] = []
+    picked_tokens: list[set[str]] = []
+    rest = [(c, _tokenize(c.get("content", ""))) for c in candidates]
+    while rest and len(picked) < limit:
+        best_idx, best_mmr = 0, -1e9
+        for i, (c, toks) in enumerate(rest):
+            max_sim = max(
+                (_jaccard(toks, pt) for pt in picked_tokens),
+                default=0.0,
+            )
+            mmr = lam * scores.get(c["id"], 0.0) - (1 - lam) * max_sim
+            if mmr > best_mmr:
+                best_mmr, best_idx = mmr, i
+        c, toks = rest.pop(best_idx)
+        picked.append(c)
+        picked_tokens.append(toks)
+    return picked
+
+
+def _merge_hybrid(
+    vec_rows: list[dict],
+    fts_rows: list[dict],
+    limit: int,
+    vector_weight: float = 0.7,
+    text_weight: float = 0.3,
+) -> list[dict]:
+    """Merge vector + FTS results by weighted score, decay, then MMR rerank."""
+    vec_max = max((r.get("vector_score", 0.0) for r in vec_rows), default=0.0) or 1.0
+    fts_max = max((r.get("combined_score", 0.0) for r in fts_rows), default=0.0) or 1.0
+
+    by_id: dict = {}
+    vec_norm: dict = {}
+    fts_norm: dict = {}
+    for r in vec_rows:
+        by_id[r["id"]] = r
+        vec_norm[r["id"]] = (r.get("vector_score") or 0.0) / vec_max
+    for r in fts_rows:
+        by_id.setdefault(r["id"], r)
+        fts_norm[r["id"]] = (r.get("combined_score") or 0.0) / fts_max
+
+    scores: dict = {}
+    for rid in by_id:
+        scores[rid] = (
+            vector_weight * vec_norm.get(rid, 0.0)
+            + text_weight * fts_norm.get(rid, 0.0)
+        )
+
+    _apply_temporal_decay(scores, by_id)
+
+    ranked = sorted(by_id.values(), key=lambda r: -scores[r["id"]])
+    return _mmr_rerank(ranked, scores, limit, lam=0.7)
+
+
+# ---------- provider selection ----------
+
+
 async def get_memory_provider(user_id: str, db: AsyncSession) -> MemoryProvider:
-    """Resolve the memory provider for a user based on their settings."""
+    """Resolve the memory provider for a user based on their settings.
+
+    - `memory_provider == "mem0"` + valid `mem0_api_key`  → Mem0Provider.
+    - Otherwise BuiltinProvider, possibly augmented with an Embedder based
+      on `memory_embedding` (`off` | `local` | `api`).
+    """
     from app.models.user import UserSetting
 
     result = await db.execute(
         select(UserSetting).where(UserSetting.user_id == uuid.UUID(user_id))
     )
     setting = result.scalar_one_or_none()
-    provider_name = "builtin"
-    if setting and setting.settings:
-        provider_name = setting.settings.get("memory_provider", "builtin")
+    s = (setting.settings if setting else {}) or {}
+
+    provider_name = s.get("memory_provider", "builtin")
 
     if provider_name == "mem0":
-        api_key = setting.settings.get("mem0_api_key", "") if setting else ""
+        api_key = s.get("mem0_api_key", "")
         if not api_key:
-            return BuiltinProvider(db)
+            log.warning(
+                "memory_provider=mem0 but mem0_api_key missing; falling back to builtin."
+            )
+            return BuiltinProvider(db, embedder=resolve_embedder(s))
         return Mem0Provider(api_key=api_key)
 
-    return BuiltinProvider(db)
+    # Default path: BuiltinProvider, optionally augmented with an embedder.
+    return BuiltinProvider(db, embedder=resolve_embedder(s))

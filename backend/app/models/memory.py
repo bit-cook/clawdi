@@ -1,6 +1,7 @@
 import uuid
 from datetime import datetime
 
+from pgvector.sqlalchemy import Vector
 from sqlalchemy import DateTime, Float, Integer, String, Text
 from sqlalchemy.dialects.postgresql import ARRAY, JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
@@ -21,3 +22,6 @@ class Memory(Base, TimestampMixin):
     metadata_: Mapped[dict | None] = mapped_column("metadata", JSONB)
     access_count: Mapped[int] = mapped_column(Integer, server_default="0")
     last_accessed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # 384-dim vector (bge-small native; OpenAI 3-small truncated via
+    # `dimensions=384`). See alembic 7ac3349475ec + services/embedding.py.
+    embedding: Mapped[list[float] | None] = mapped_column(Vector(384), nullable=True)

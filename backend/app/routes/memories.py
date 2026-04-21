@@ -1,10 +1,18 @@
+import logging
+
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.auth import AuthContext, get_auth
 from app.core.database import get_session
+from app.models.memory import Memory
+from app.models.user import UserSetting
+from app.services.embedding import resolve_embedder
 from app.services.memory_provider import get_memory_provider
+
+log = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/memories", tags=["memories"])
 
@@ -32,7 +40,7 @@ async def list_memories(
     provider = await get_memory_provider(str(auth.user_id), db)
 
     if q:
-        return await provider.search(str(auth.user_id), q, limit=limit)
+        return await provider.search(str(auth.user_id), q, limit=limit, category=category)
 
     return await provider.list_all(str(auth.user_id), limit=limit, offset=offset, category=category)
 
@@ -76,3 +84,63 @@ async def delete_memory(
     provider = await get_memory_provider(str(auth.user_id), db)
     await provider.delete(str(auth.user_id), memory_id)
     return {"status": "deleted"}
+
+
+@router.post("/embed-backfill")
+async def embed_backfill(
+    force: bool = Query(default=False, description="Re-embed rows that already have an embedding."),
+    batch_size: int = Query(default=32, ge=1, le=200),
+    auth: AuthContext = Depends(get_auth),
+    db: AsyncSession = Depends(get_session),
+):
+    """Compute embeddings for the caller's memories that lack one.
+
+    Used after the user enables a semantic-search mode (local / api) or
+    switches embedding providers. Uses the embedder chosen by the user's
+    current settings.
+
+    With `force=true`, re-embeds rows that already have embeddings too
+    (useful after changing the embedding model).
+    """
+    result = await db.execute(
+        select(UserSetting).where(UserSetting.user_id == auth.user_id)
+    )
+    setting = result.scalar_one_or_none()
+    embedder = resolve_embedder((setting.settings if setting else {}) or {})
+    if embedder is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="No embedding provider configured. Set memory_embedding to 'local' or 'api' in settings.",
+        )
+
+    # Pull rows missing (or all, if force) for this user. Stream in batches
+    # so we don't load thousands of rows into memory at once.
+    base = select(Memory).where(Memory.user_id == auth.user_id)
+    if not force:
+        base = base.where(Memory.embedding.is_(None))
+
+    processed = 0
+    failed = 0
+    offset = 0
+    while True:
+        chunk = (
+            await db.execute(base.order_by(Memory.created_at.asc()).limit(batch_size).offset(offset))
+        ).scalars().all()
+        if not chunk:
+            break
+        for mem in chunk:
+            try:
+                vec = await embedder.embed(mem.content)
+                mem.embedding = vec
+                processed += 1
+            except Exception as e:
+                log.warning("backfill embed failed for %s: %s", mem.id, e)
+                failed += 1
+        await db.commit()
+        # When `force=false`, we mutated rows so their `embedding IS NOT NULL`
+        # and they'd leave the predicate. Don't increment offset — the next
+        # query already excludes them. When `force=true`, every row matches
+        # so we must advance.
+        if force:
+            offset += batch_size
+    return {"processed": processed, "failed": failed}

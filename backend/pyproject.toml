@@ -17,6 +17,9 @@ dependencies = [
     "aiofiles>=24.1",
     "psycopg2-binary>=2.9.11",
     "composio-core>=0.7.21",
+    "pgvector>=0.2.5",
+    "openai>=1.40",
+    "fastembed>=0.3",
 ]
 
 [tool.pdm.scripts]
