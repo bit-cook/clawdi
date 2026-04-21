@@ -11,6 +11,11 @@ export interface ClawdiConfig {
 	apiUrl: string;
 }
 
+// Keys accepted by `clawdi config set/get/unset`. Add a new entry here
+// when introducing a new persistent setting.
+export const CONFIG_KEYS = ["apiUrl"] as const;
+export type ConfigKey = (typeof CONFIG_KEYS)[number];
+
 export interface ClawdiAuth {
 	apiKey: string;
 	userId?: string;
@@ -33,12 +38,35 @@ function writeJson(path: string, data: unknown) {
 	writeFileSync(path, JSON.stringify(data, null, 2) + "\n", { mode: 0o600 });
 }
 
+const DEFAULT_API_URL = "http://localhost:8000";
+
 export function getConfig(): ClawdiConfig {
-	return readJson<ClawdiConfig>(CONFIG_FILE) ?? { apiUrl: "http://localhost:8000" };
+	// Precedence: CLAWDI_API_URL env var > ~/.clawdi/config.json > default.
+	// Env var wins so CI / scripted runs can override without writing to disk.
+	const stored = readJson<Partial<ClawdiConfig>>(CONFIG_FILE) ?? {};
+	return {
+		apiUrl: process.env.CLAWDI_API_URL || stored.apiUrl || DEFAULT_API_URL,
+	};
+}
+
+/** Raw config on disk, without env overrides. Used by `config list / get`. */
+export function getStoredConfig(): Partial<ClawdiConfig> {
+	return readJson<Partial<ClawdiConfig>>(CONFIG_FILE) ?? {};
 }
 
 export function setConfig(config: ClawdiConfig) {
 	writeJson(CONFIG_FILE, config);
+}
+
+export function setConfigKey(key: ConfigKey, value: string) {
+	const current = getStoredConfig();
+	writeJson(CONFIG_FILE, { ...current, [key]: value });
+}
+
+export function unsetConfigKey(key: ConfigKey) {
+	const current = getStoredConfig();
+	delete current[key];
+	writeJson(CONFIG_FILE, current);
 }
 
 export function getAuth(): ClawdiAuth | null {

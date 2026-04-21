@@ -32,6 +32,42 @@ program
 		await status();
 	});
 
+const configCmd = program
+	.command("config")
+	.description("Read or write CLI configuration (~/.clawdi/config.json)");
+
+configCmd
+	.command("list")
+	.description("Show all configured values")
+	.action(async () => {
+		const { configList } = await import("./commands/config.js");
+		configList();
+	});
+
+configCmd
+	.command("get <key>")
+	.description("Print the stored value for a key (exit 1 if unset)")
+	.action(async (key) => {
+		const { configGet } = await import("./commands/config.js");
+		configGet(key);
+	});
+
+configCmd
+	.command("set <key> <value>")
+	.description("Persist a config value to disk")
+	.action(async (key, value) => {
+		const { configSet } = await import("./commands/config.js");
+		configSet(key, value);
+	});
+
+configCmd
+	.command("unset <key>")
+	.description("Remove a config key from disk")
+	.action(async (key) => {
+		const { configUnset } = await import("./commands/config.js");
+		configUnset(key);
+	});
+
 program
 	.command("setup")
 	.description("Detect agent and register environment")
