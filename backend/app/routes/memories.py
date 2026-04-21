@@ -113,21 +113,26 @@ async def embed_backfill(
             detail="No embedding provider configured. Set memory_embedding to 'local' or 'api' in settings.",
         )
 
-    # Pull rows missing (or all, if force) for this user. Stream in batches
-    # so we don't load thousands of rows into memory at once.
-    base = select(Memory).where(Memory.user_id == auth.user_id)
+    # Snapshot the IDs of rows we intend to process. Iterating via offset
+    # on the live query is wrong here: when `force=false`, each successful
+    # embed removes its row from `WHERE embedding IS NULL`, shifting the
+    # result set — incrementing offset would then skip unprocessed rows,
+    # while leaving offset at 0 would loop forever on any failed row that
+    # stays NULL. UUIDs are ~16 bytes each, so snapshotting even tens of
+    # thousands of IDs is cheap.
+    id_query = select(Memory.id).where(Memory.user_id == auth.user_id)
     if not force:
-        base = base.where(Memory.embedding.is_(None))
+        id_query = id_query.where(Memory.embedding.is_(None))
+    id_query = id_query.order_by(Memory.created_at.asc())
+    target_ids = (await db.execute(id_query)).scalars().all()
 
     processed = 0
     failed = 0
-    offset = 0
-    while True:
+    for i in range(0, len(target_ids), batch_size):
+        chunk_ids = target_ids[i:i + batch_size]
         chunk = (
-            await db.execute(base.order_by(Memory.created_at.asc()).limit(batch_size).offset(offset))
+            await db.execute(select(Memory).where(Memory.id.in_(chunk_ids)))
         ).scalars().all()
-        if not chunk:
-            break
         for mem in chunk:
             try:
                 vec = await embedder.embed(mem.content)
@@ -137,10 +142,4 @@ async def embed_backfill(
                 log.warning("backfill embed failed for %s: %s", mem.id, e)
                 failed += 1
         await db.commit()
-        # When `force=false`, we mutated rows so their `embedding IS NOT NULL`
-        # and they'd leave the predicate. Don't increment offset — the next
-        # query already excludes them. When `force=true`, every row matches
-        # so we must advance.
-        if force:
-            offset += batch_size
     return {"processed": processed, "failed": failed}

@@ -22,6 +22,7 @@ class Memory(Base, TimestampMixin):
     metadata_: Mapped[dict | None] = mapped_column("metadata", JSONB)
     access_count: Mapped[int] = mapped_column(Integer, server_default="0")
     last_accessed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    # 384-dim vector (bge-small native; OpenAI 3-small truncated via
-    # `dimensions=384`). See alembic 7ac3349475ec + services/embedding.py.
-    embedding: Mapped[list[float] | None] = mapped_column(Vector(384), nullable=True)
+    # 768-dim vector: matches paraphrase-multilingual-mpnet-base-v2 (local
+    # default) natively, and OpenAI text-embedding-3-* truncated via
+    # `dimensions=768` for the API path. See services/embedding.py.
+    embedding: Mapped[list[float] | None] = mapped_column(Vector(768), nullable=True)

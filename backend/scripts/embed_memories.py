@@ -43,19 +43,21 @@ async def embed_for_user(user_id: uuid.UUID, force: bool, batch_size: int) -> No
             log.info("skip %s: no embedder configured", user_id)
             return
 
-        base = select(Memory).where(Memory.user_id == user_id)
+        # Snapshot target IDs up-front; see routes/memories.py
+        # embed_backfill for why offset-walking the live query is incorrect.
+        id_query = select(Memory.id).where(Memory.user_id == user_id)
         if not force:
-            base = base.where(Memory.embedding.is_(None))
+            id_query = id_query.where(Memory.embedding.is_(None))
+        id_query = id_query.order_by(Memory.created_at.asc())
+        target_ids = (await db.execute(id_query)).scalars().all()
 
         processed = 0
         failed = 0
-        offset = 0
-        while True:
+        for i in range(0, len(target_ids), batch_size):
+            chunk_ids = target_ids[i:i + batch_size]
             chunk = (
-                await db.execute(base.order_by(Memory.created_at.asc()).limit(batch_size).offset(offset))
+                await db.execute(select(Memory).where(Memory.id.in_(chunk_ids)))
             ).scalars().all()
-            if not chunk:
-                break
             for mem in chunk:
                 try:
                     vec = await embedder.embed(mem.content)
@@ -65,8 +67,6 @@ async def embed_for_user(user_id: uuid.UUID, force: bool, batch_size: int) -> No
                     log.warning("embed failed for %s: %s", mem.id, e)
                     failed += 1
             await db.commit()
-            if force:
-                offset += batch_size
         log.info("user %s: processed=%d failed=%d", user_id, processed, failed)
 
 

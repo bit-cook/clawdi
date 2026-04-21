@@ -17,29 +17,6 @@ from app.services.embedding import Embedder, resolve_embedder
 log = logging.getLogger(__name__)
 
 
-class MemoryResult:
-    def __init__(self, id: str, content: str, category: str, source: str,
-                 tags: list[str] | None, created_at: str, **extra):
-        self.id = id
-        self.content = content
-        self.category = category
-        self.source = source
-        self.tags = tags
-        self.created_at = created_at
-        self.extra = extra
-
-    def to_dict(self) -> dict:
-        return {
-            "id": self.id,
-            "content": self.content,
-            "category": self.category,
-            "source": self.source,
-            "tags": self.tags,
-            "created_at": self.created_at,
-            **self.extra,
-        }
-
-
 class MemoryProvider(Protocol):
     async def add(self, user_id: str, content: str, category: str = "fact",
                   source: str = "manual", tags: list[str] | None = None) -> dict: ...
@@ -142,17 +119,33 @@ class BuiltinProvider:
             rows = (await self.db.execute(sql, {**params, "min_score": 0.0})).mappings().all()
         return [_row_to_search_dict(r, score_key="combined_score") for r in rows]
 
+    # Cosine distance threshold for vector search. For
+    # `paraphrase-multilingual-mpnet-base-v2`, empirically measured on
+    # representative memories + natural-language queries:
+    #   - legitimate semantic matches:  0.36 – 0.55 similarity
+    #   - cross-lingual paraphrase:     ~0.47 similarity
+    #   - near-duplicate / same-topic:  0.77 – 0.82 similarity
+    #   - unrelated noise:              0.02 – 0.29 similarity
+    # A floor of similarity ≥ 0.35 (distance ≤ 0.65) cleanly separates
+    # signal from noise while preserving cross-lingual recall. Re-tune
+    # if quality complaints surface.
+    VECTOR_DISTANCE_THRESHOLD = 0.65
+
     async def _search_vector(self, user_id: str, query: str, limit: int,
                              category: str | None) -> list[dict]:
-        """pgvector cosine-distance nearest neighbors among rows with embeddings."""
+        """pgvector cosine-distance nearest neighbors among rows with embeddings.
+
+        Applies an absolute similarity floor so queries unrelated to any
+        stored memory return empty instead of "the three least-distant rows".
+        """
         q_vec = await self.embedder.embed(query)
-        # Use pgvector's SQLAlchemy integration on Memory.embedding column.
         distance = Memory.embedding.cosine_distance(q_vec)
         stmt = (
             select(Memory, distance.label("distance"))
             .where(
                 Memory.user_id == uuid.UUID(user_id),
                 Memory.embedding.is_not(None),
+                distance < self.VECTOR_DISTANCE_THRESHOLD,
             )
             .order_by(distance)
             .limit(limit)
@@ -163,8 +156,7 @@ class BuiltinProvider:
         out: list[dict] = []
         for mem, dist in rows:
             d = _memory_to_dict(mem)
-            # cosine distance ∈ [0, 2]; convert to similarity ∈ [-1, 1]
-            # clamped to [0, 1] for our weighted merge.
+            # cosine distance ∈ [0, 2]; convert to similarity ∈ [0, 1].
             sim = max(0.0, 1.0 - float(dist))
             d["vector_score"] = sim
             out.append(d)
@@ -308,15 +300,15 @@ def _jaccard(a: set[str], b: set[str]) -> float:
     return len(a & b) / len(a | b)
 
 
-def _parse_ts(v) -> datetime | None:
-    if isinstance(v, datetime):
-        return v if v.tzinfo else v.replace(tzinfo=timezone.utc)
-    if isinstance(v, str):
-        try:
-            return datetime.fromisoformat(v.replace("Z", "+00:00"))
-        except ValueError:
-            return None
-    return None
+def _parse_iso_ts(v: object) -> datetime | None:
+    """Parse the ISO-formatted `created_at` string produced by the _*_to_dict
+    helpers. Returns None if the value isn't an ISO string we can parse."""
+    if not isinstance(v, str):
+        return None
+    try:
+        return datetime.fromisoformat(v.replace("Z", "+00:00"))
+    except ValueError:
+        return None
 
 
 def _apply_temporal_decay(
@@ -330,7 +322,7 @@ def _apply_temporal_decay(
     """
     now = datetime.now(timezone.utc)
     for rid, r in rows_by_id.items():
-        created_at = _parse_ts(r.get("created_at"))
+        created_at = _parse_iso_ts(r.get("created_at"))
         if created_at is None:
             continue
         age_days = max(0.0, (now - created_at).total_seconds() / 86400.0)

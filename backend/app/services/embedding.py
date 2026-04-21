@@ -2,12 +2,17 @@
 
 Two modes, chosen per-user via settings.memory_embedding:
 
-- "local" — fastembed ONNX, ~130MB BAAI/bge-small-en-v1.5 (384 dim).
-  First call downloads the model; subsequent calls load from disk.
-  No API key required; CPU-only inference via onnxruntime.
+- "local" — fastembed ONNX, ~1GB paraphrase-multilingual-mpnet-base-v2
+  (768 dim, 50+ languages, symmetric). First call downloads the model;
+  subsequent calls load from disk. No API key required; CPU-only
+  inference via onnxruntime.
+
+  (Why not intfloat/multilingual-e5-base? fastembed's curated list
+  doesn't include it; mpnet-base-v2 is the strongest 768-dim multilingual
+  option available without pulling sentence-transformers + PyTorch.)
 
 - "api" — OpenAI-compatible embeddings. Default OpenAI
-  `text-embedding-3-small` with `dimensions=384` (Matryoshka truncation)
+  `text-embedding-3-small` with `dimensions=768` (Matryoshka truncation)
   so the on-disk vector column is dimension-compatible with local mode.
   Override base_url for OpenRouter or any other OpenAI-compatible endpoint.
 
@@ -22,7 +27,8 @@ from typing import Protocol
 
 log = logging.getLogger(__name__)
 
-EMBEDDING_DIM = 384
+EMBEDDING_DIM = 768
+LOCAL_MODEL_NAME = "sentence-transformers/paraphrase-multilingual-mpnet-base-v2"
 
 
 class Embedder(Protocol):
@@ -30,11 +36,10 @@ class Embedder(Protocol):
 
 
 class LocalEmbedder:
-    """fastembed with BAAI/bge-small-en-v1.5 (384 dim, ~130MB ONNX).
+    """fastembed with paraphrase-multilingual-mpnet-base-v2 (768 dim, ~1GB ONNX).
 
-    First call downloads the model to the fastembed cache dir
-    (FASTEMBED_CACHE_DIR or a sensible default). Subsequent calls load
-    from disk. Runs on CPU via onnxruntime — no GPU setup needed.
+    First call downloads the model to the fastembed cache dir. Subsequent
+    calls load from disk. Runs on CPU via onnxruntime.
     """
 
     _instance: "LocalEmbedder | None" = None
@@ -42,8 +47,8 @@ class LocalEmbedder:
     def __init__(self) -> None:
         from fastembed import TextEmbedding
 
-        # Lazy-load the model. Blocks on first call while downloading.
-        self.model = TextEmbedding("BAAI/bge-small-en-v1.5")
+        # Lazy-load the model. Blocks on first call while downloading (~1GB).
+        self.model = TextEmbedding(LOCAL_MODEL_NAME)
 
     @classmethod
     def get(cls) -> "LocalEmbedder":
@@ -52,8 +57,6 @@ class LocalEmbedder:
         return cls._instance
 
     async def embed(self, text: str) -> list[float]:
-        # fastembed.embed is a blocking generator; dispatch to a thread
-        # so we don't stall the event loop.
         def _embed_sync() -> list[float]:
             return list(next(iter(self.model.embed([text]))))
 
@@ -75,10 +78,9 @@ class ApiEmbedder:
         self.model = model
 
     async def embed(self, text: str) -> list[float]:
-        # `dimensions=384` truncates via Matryoshka (supported by
-        # text-embedding-3-*). For providers that don't support it, the
-        # call will fail; consider the 384-dim guarantee a supported-model
-        # contract.
+        # `dimensions=768` truncates via Matryoshka (supported by
+        # text-embedding-3-*). Providers that don't support it will surface
+        # an explicit error, which is preferable to silently mismatched dims.
         resp = await self.client.embeddings.create(
             input=text, model=self.model, dimensions=EMBEDDING_DIM,
         )

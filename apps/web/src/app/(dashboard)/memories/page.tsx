@@ -445,7 +445,7 @@ function SemanticSearchCard({
       {mode === "off" && (
         <p className="text-xs text-muted-foreground">
           Using full-text + fuzzy search only (zero config, fast).
-          Switch to <strong>Local</strong> for on-device semantic search (~130MB model download on first use),
+          Switch to <strong>Local</strong> for on-device multilingual semantic search (~1GB model download on first use),
           or <strong>API</strong> to use OpenAI or OpenRouter embeddings.
         </p>
       )}
@@ -453,8 +453,8 @@ function SemanticSearchCard({
       {mode === "local" && (
         <div className="space-y-2">
           <p className="text-xs text-muted-foreground">
-            Using <code className="text-xs">BAAI/bge-small-en-v1.5</code> (ONNX, 384 dim).
-            First <code>memory_add</code> after switching will download ~130MB to the backend.
+            Using <code className="text-xs">paraphrase-multilingual-mpnet-base-v2</code> (ONNX, 768 dim, 50+ languages — works well for mixed Chinese / English memories).
+            First use after switching will download ~1GB to the backend.
           </p>
           <button
             type="button"
@@ -568,7 +568,7 @@ function SemanticSearchCard({
             )}
           </div>
           <p className="text-xs text-muted-foreground">
-            Embeddings are truncated to 384 dim via the OpenAI <code>dimensions</code> parameter,
+            Embeddings are truncated to 768 dim via the OpenAI <code>dimensions</code> parameter,
             matching the Local model so the on-disk vector column is shared.
           </p>
         </div>
