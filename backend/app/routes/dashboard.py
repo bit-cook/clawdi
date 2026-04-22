@@ -7,7 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.auth import AuthContext, get_auth
 from app.core.database import get_session
 from app.models.memory import Memory
-from app.models.session import Session
+from app.models.session import AgentEnvironment, Session
 from app.models.skill import Skill
 from app.models.vault import Vault, VaultItem
 
@@ -90,6 +90,11 @@ async def get_stats(
             select(func.count(VaultItem.id)).where(VaultItem.vault_id.in_(vault_ids))
         )).scalar() or 0
 
+    # Environments (registered agent instances)
+    environments_count = (await db.execute(
+        select(func.count(AgentEnvironment.id)).where(AgentEnvironment.user_id == auth.user_id)
+    )).scalar() or 0
+
     # Connectors (Composio) — best-effort, don't fail if unavailable
     connectors_count = 0
     try:
@@ -115,6 +120,7 @@ async def get_stats(
         "vault_count": vault_count,
         "vault_keys_count": vault_keys_count,
         "connectors_count": connectors_count,
+        "environments_count": environments_count,
     }
 
 

@@ -9,6 +9,7 @@ import { OpenClawAdapter } from "../adapters/openclaw";
 import type { AgentAdapter } from "../adapters/base";
 import { ApiClient } from "../lib/api-client";
 import { getClawdiDir, isLoggedIn } from "../lib/config";
+import { readEnvByAgent } from "../lib/env-state";
 import { tarSkillDir, tarSingleFile } from "../lib/tar-helpers";
 
 function requireAuth() {
@@ -32,9 +33,18 @@ function getRegisteredAdapters(): AgentAdapter[] {
 	return adapters;
 }
 
-export async function skillsList() {
+export async function skillsList(opts: { agent?: string } = {}) {
 	requireAuth();
-	const api = new ApiClient();
+	let envId: string | null | undefined = undefined;
+	if (opts.agent) {
+		const env = readEnvByAgent(opts.agent);
+		if (!env) {
+			console.log(chalk.red(`No env registered for ${opts.agent}. Run \`clawdi setup --agent ${opts.agent}\` first.`));
+			process.exit(1);
+		}
+		envId = env.environmentId;
+	}
+	const api = new ApiClient({ envId });
 	const skills = await api.get<any[]>("/api/skills");
 
 	if (skills.length === 0) {
@@ -50,7 +60,7 @@ export async function skillsList() {
 	console.log(chalk.gray(`\n  ${skills.length} skill${skills.length === 1 ? "" : "s"} total`));
 }
 
-export async function skillsAdd(path: string) {
+export async function skillsAdd(path: string, opts: { scope?: string } = {}) {
 	requireAuth();
 	const resolved = resolve(path);
 	const stat = statSync(resolved);
@@ -73,14 +83,40 @@ export async function skillsAdd(path: string) {
 		tarBytes = await tarSingleFile(skillKey, content);
 	}
 
-	const result = await api.uploadFile<{ skill_key: string; version: number; file_count: number }>(
-		"/api/skills/upload",
-		{ skill_key: skillKey },
-		tarBytes,
-		`${skillKey}.tar.gz`,
-	);
+	const fields: Record<string, string> = { skill_key: skillKey };
+	if (opts.scope) {
+		// Accept either UUID or scope name; resolve name → id
+		const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(opts.scope);
+		if (isUuid) {
+			fields.scope_id = opts.scope;
+		} else {
+			const scopes = await api.get<Array<{ id: string; name: string }>>("/api/scopes");
+			const match = scopes.filter((s) => s.name === opts.scope);
+			if (match.length === 0) {
+				console.log(chalk.red(`No Scope named "${opts.scope}". Use \`clawdi scope list\` to see your scopes.`));
+				return;
+			}
+			if (match.length > 1) {
+				console.log(chalk.red(`Multiple scopes named "${opts.scope}". Use the UUID instead.`));
+				return;
+			}
+			fields.scope_id = match[0].id;
+		}
+	}
 
-	console.log(chalk.green(`✓ Uploaded ${result.skill_key} (v${result.version}, ${result.file_count} files)`));
+	const result = await api.uploadFile<{
+		skill_key: string;
+		version: number;
+		file_count: number;
+		scope_id: string | null;
+	}>("/api/skills/upload", fields, tarBytes, `${skillKey}.tar.gz`);
+
+	const scopeTag = result.scope_id ? chalk.cyan(` scope=${result.scope_id.slice(0, 8)}`) : "";
+	console.log(
+		chalk.green(
+			`✓ Uploaded ${result.skill_key} (v${result.version}, ${result.file_count} files)${scopeTag}`,
+		),
+	);
 }
 
 export async function skillsInstall(repoInput: string) {

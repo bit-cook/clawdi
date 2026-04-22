@@ -1,5 +1,6 @@
 import hashlib
 import logging
+import uuid
 from datetime import datetime, timezone
 
 import jwt
@@ -11,7 +12,51 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.config import settings
 from app.core.database import get_session
 from app.models.api_key import ApiKey
+from app.models.env_scope import AgentEnvironmentScope
+from app.models.scope import Scope, ScopeMembership
+from app.models.session import AgentEnvironment
 from app.models.user import User
+
+
+async def ensure_personal_scope(db: AsyncSession, user: User) -> None:
+    """Idempotent: every user must have a Personal scope + be its owner
+    + have user.default_scope_id pointing to it. Called on every auth so
+    existing users migrate transparently."""
+    if user.default_scope_id:
+        # Verify it still exists (could have been deleted via some edge path)
+        existing = await db.execute(select(Scope).where(Scope.id == user.default_scope_id))
+        if existing.scalar_one_or_none():
+            return
+        user.default_scope_id = None  # fall through to recreate
+
+    # Find existing Personal scope for this user, if any
+    result = await db.execute(
+        select(Scope).where(
+            Scope.owner_user_id == user.id,
+            Scope.is_personal == True,  # noqa: E712
+        )
+    )
+    personal = result.scalar_one_or_none()
+
+    if not personal:
+        personal = Scope(
+            name="Personal",
+            owner_user_id=user.id,
+            visibility="shared",
+            is_personal=True,
+        )
+        db.add(personal)
+        await db.flush()
+        db.add(
+            ScopeMembership(
+                scope_id=personal.id,
+                user_id=user.id,
+                role="owner",
+            )
+        )
+
+    user.default_scope_id = personal.id
+    await db.commit()
 
 bearer_scheme = HTTPBearer()
 logger = logging.getLogger(__name__)
@@ -20,10 +65,20 @@ API_KEY_PREFIX = "clawdi_"
 
 
 class AuthContext:
-    def __init__(self, user: User, api_key: ApiKey | None = None):
+    def __init__(
+        self,
+        user: User,
+        api_key: ApiKey | None = None,
+        environment_id: uuid.UUID | None = None,
+        subscribed_scope_ids: list[uuid.UUID] | None = None,
+        default_write_scope_id: uuid.UUID | None = None,
+    ):
         self.user = user
         self.api_key = api_key
         self.is_cli = api_key is not None
+        self.environment_id = environment_id
+        self.subscribed_scope_ids = subscribed_scope_ids or []
+        self.default_write_scope_id = default_write_scope_id
 
     @property
     def user_id(self):
@@ -97,6 +152,7 @@ async def _auth_via_clerk_jwt(
 
 
 async def get_auth(
+    request: Request,
     credentials: HTTPAuthorizationCredentials = Depends(bearer_scheme),
     db: AsyncSession = Depends(get_session),
 ) -> AuthContext:
@@ -104,15 +160,46 @@ async def get_auth(
 
     # Try ApiKey first (fast path, prefix check)
     ctx = await _auth_via_api_key(token, db)
-    if ctx:
-        return ctx
+    if not ctx:
+        # Fall through to Clerk JWT
+        ctx = await _auth_via_clerk_jwt(token, db)
+    if not ctx:
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Invalid credentials")
 
-    # Fall through to Clerk JWT
-    ctx = await _auth_via_clerk_jwt(token, db)
-    if ctx:
-        return ctx
+    # Lazy-init: every user must have a Personal scope backing default_scope_id.
+    # Idempotent; noop after first run per user.
+    await ensure_personal_scope(db, ctx.user)
 
-    raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Invalid credentials")
+    # Optional env binding via header — required for scope-filtered endpoints
+    env_header = request.headers.get("X-Clawdi-Environment-Id")
+    if env_header:
+        try:
+            env_id = uuid.UUID(env_header)
+        except ValueError:
+            raise HTTPException(
+                status.HTTP_400_BAD_REQUEST, "Invalid X-Clawdi-Environment-Id"
+            )
+        # Validate env ownership
+        result = await db.execute(
+            select(AgentEnvironment).where(AgentEnvironment.id == env_id)
+        )
+        env = result.scalar_one_or_none()
+        if not env or env.user_id != ctx.user_id:
+            raise HTTPException(
+                status.HTTP_403_FORBIDDEN,
+                "Environment does not belong to authenticated user",
+            )
+        ctx.environment_id = env_id
+        ctx.default_write_scope_id = env.default_write_scope_id
+        # Load subscriptions
+        sub_result = await db.execute(
+            select(AgentEnvironmentScope.scope_id).where(
+                AgentEnvironmentScope.environment_id == env_id
+            )
+        )
+        ctx.subscribed_scope_ids = [row[0] for row in sub_result.all()]
+
+    return ctx
 
 
 async def require_cli_auth(auth: AuthContext = Depends(get_auth)) -> AuthContext:

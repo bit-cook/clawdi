@@ -48,7 +48,10 @@ export default function DashboardPage() {
     },
   });
 
-  const isNewUser = stats && stats.total_sessions === 0;
+  // Show onboarding card until the user has connected at least one agent.
+  // Using env count rather than session count keeps the card from lingering
+  // after `clawdi setup` succeeds (sessions require an explicit sync up).
+  const isNewUser = stats && (stats.environments_count ?? 0) === 0;
 
   return (
     <div className="space-y-6">

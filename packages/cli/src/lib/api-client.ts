@@ -1,10 +1,12 @@
+import { readFirstEnv } from "./env-state";
 import { getAuth, getConfig } from "./config";
 
 export class ApiClient {
 	private baseUrl: string;
 	private apiKey: string;
+	private envId: string | null;
 
-	constructor() {
+	constructor(opts?: { envId?: string | null }) {
 		const config = getConfig();
 		const auth = getAuth();
 		if (!auth) {
@@ -12,18 +14,27 @@ export class ApiClient {
 		}
 		this.baseUrl = config.apiUrl;
 		this.apiKey = auth.apiKey;
+		if (opts?.envId !== undefined) {
+			this.envId = opts.envId;
+		} else {
+			const env = readFirstEnv();
+			this.envId = env?.environmentId ?? null;
+		}
+	}
+
+	private envHeader(): Record<string, string> {
+		return this.envId ? { "X-Clawdi-Environment-Id": this.envId } : {};
 	}
 
 	async request<T>(path: string, options: RequestInit = {}): Promise<T> {
 		const url = `${this.baseUrl}${path}`;
-		const res = await fetch(url, {
-			...options,
-			headers: {
-				Authorization: `Bearer ${this.apiKey}`,
-				"Content-Type": "application/json",
-				...options.headers,
-			},
-		});
+		const headers: Record<string, string> = {
+			Authorization: `Bearer ${this.apiKey}`,
+			"Content-Type": "application/json",
+			...this.envHeader(),
+			...(options.headers as Record<string, string>),
+		};
+		const res = await fetch(url, { ...options, headers });
 
 		if (!res.ok) {
 			const text = await res.text();
@@ -63,7 +74,10 @@ export class ApiClient {
 		const url = `${this.baseUrl}${path}`;
 		const res = await fetch(url, {
 			method: "POST",
-			headers: { Authorization: `Bearer ${this.apiKey}` },
+			headers: {
+				Authorization: `Bearer ${this.apiKey}`,
+				...this.envHeader(),
+			},
 			body: formData,
 		});
 
@@ -78,7 +92,10 @@ export class ApiClient {
 	async getBytes(path: string): Promise<Buffer> {
 		const url = `${this.baseUrl}${path}`;
 		const res = await fetch(url, {
-			headers: { Authorization: `Bearer ${this.apiKey}` },
+			headers: {
+				Authorization: `Bearer ${this.apiKey}`,
+				...this.envHeader(),
+			},
 		});
 
 		if (!res.ok) {

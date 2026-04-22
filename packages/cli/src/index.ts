@@ -135,17 +135,19 @@ const skillsCmd = program.command("skill").description("Manage skills");
 skillsCmd
 	.command("list")
 	.description("List synced skills")
-	.action(async () => {
+	.option("--agent <type>", "Filter by a specific env's scope subscriptions")
+	.action(async (opts) => {
 		const { skillsList } = await import("./commands/skills.js");
-		await skillsList();
+		await skillsList({ agent: opts.agent });
 	});
 
 skillsCmd
 	.command("add <path>")
 	.description("Upload a skill file")
-	.action(async (path) => {
+	.option("--scope <scope_id>", "Attach this skill to a Scope (default: private)")
+	.action(async (path, opts) => {
 		const { skillsAdd } = await import("./commands/skills.js");
-		await skillsAdd(path);
+		await skillsAdd(path, { scope: opts.scope });
 	});
 
 skillsCmd
@@ -162,6 +164,99 @@ skillsCmd
 	.action(async (key) => {
 		const { skillsRm } = await import("./commands/skills.js");
 		await skillsRm(key);
+	});
+
+const inviteCmd = program.command("invite").description("Accept scope invitations");
+
+inviteCmd
+	.command("accept <token_or_url>")
+	.description("Accept a scope invitation token (clawdi_inv_...) or /join/... URL")
+	.action(async (tokenOrUrl) => {
+		const { inviteAccept } = await import("./commands/invite.js");
+		await inviteAccept(tokenOrUrl);
+	});
+
+// Shortcut: `clawdi accept <token>` is easier to remember
+program
+	.command("accept <token_or_url>")
+	.description("Alias for `clawdi invite accept`")
+	.action(async (tokenOrUrl) => {
+		const { inviteAccept } = await import("./commands/invite.js");
+		await inviteAccept(tokenOrUrl);
+	});
+
+const agentCmd = program.command("agent").description("Manage agent environment settings");
+
+const agentScopeCmd = agentCmd
+	.command("scope")
+	.description("Control which scopes an agent is in and where it writes");
+
+agentScopeCmd
+	.command("add <agent> <scope>")
+	.description("Include an agent in a scope (by name or UUID)")
+	.action(async (agent, scope) => {
+		const { scopeSubscribe } = await import("./commands/scope.js");
+		await scopeSubscribe(scope, agent);
+	});
+
+agentScopeCmd
+	.command("remove <agent> <scope>")
+	.description("Remove an agent from a scope")
+	.action(async (agent, scope) => {
+		const { scopeUnsubscribe } = await import("./commands/scope.js");
+		await scopeUnsubscribe(scope, agent);
+	});
+
+agentScopeCmd
+	.command("default <agent> <scope>")
+	.description("Set default write scope for an agent (use 'private' for no scope)")
+	.action(async (agent, scope) => {
+		const { agentSetDefault } = await import("./commands/scope.js");
+		await agentSetDefault(agent, scope);
+	});
+
+const scopeCmd = program.command("scope").description("Manage Scopes");
+
+scopeCmd
+	.command("create <name>")
+	.description("Create a new Scope (you become owner)")
+	.action(async (name) => {
+		const { scopeCreate } = await import("./commands/scope.js");
+		await scopeCreate(name);
+	});
+
+scopeCmd
+	.command("list")
+	.description("List Scopes you own or are a member of")
+	.action(async () => {
+		const { scopeList } = await import("./commands/scope.js");
+		await scopeList();
+	});
+
+scopeCmd
+	.command("members <scope_id>")
+	.description("List members of a Scope")
+	.action(async (id) => {
+		const { scopeMembers } = await import("./commands/scope.js");
+		await scopeMembers(id);
+	});
+
+scopeCmd
+	.command("subscribe <scope_id>")
+	.description("Subscribe current environment to a Scope")
+	.option("--agent <type>", "Target agent (claude_code, codex, hermes, openclaw)")
+	.action(async (id, opts) => {
+		const { scopeSubscribe } = await import("./commands/scope.js");
+		await scopeSubscribe(id, opts.agent);
+	});
+
+scopeCmd
+	.command("unsubscribe <scope_id>")
+	.description("Unsubscribe current environment from a Scope")
+	.option("--agent <type>", "Target agent")
+	.action(async (id, opts) => {
+		const { scopeUnsubscribe } = await import("./commands/scope.js");
+		await scopeUnsubscribe(id, opts.agent);
 	});
 
 const memoriesCmd = program

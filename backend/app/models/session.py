@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import BigInteger, DateTime, Integer, String, Text, func
+from sqlalchemy import BigInteger, DateTime, ForeignKey, Integer, String, Text, func
 from sqlalchemy.dialects.postgresql import ARRAY, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -19,6 +19,13 @@ class AgentEnvironment(Base, TimestampMixin):
     agent_version: Mapped[str | None] = mapped_column(String(50))
     os: Mapped[str] = mapped_column(String(50), nullable=False)
     last_seen_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # Writes from this env (memory/skill/vault) without an explicit scope_id
+    # land here. Must either be NULL or a scope the env is subscribed to.
+    default_write_scope_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("scopes.id", ondelete="SET NULL"),
+        nullable=True,
+    )
 
 
 class Session(Base, TimestampMixin):

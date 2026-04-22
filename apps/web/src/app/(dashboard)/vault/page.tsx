@@ -9,15 +9,20 @@ import {
   Trash2,
   X,
 } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useState } from "react";
+import { toast } from "sonner";
+import { RowActions, DropdownMenuItem, DropdownMenuSeparator } from "@/components/row-actions";
+import { ScopeFilterBar } from "@/components/scope-filter-bar";
 import { Skeleton } from "@/components/ui/skeleton";
-import { apiFetch } from "@/lib/api";
+import { apiFetch, ApiError } from "@/lib/api";
 import { cn } from "@/lib/utils";
 
 export default function VaultPage() {
   const { getToken } = useAuth();
   const queryClient = useQueryClient();
   const [newVaultSlug, setNewVaultSlug] = useState("");
+  const [newVaultScope, setNewVaultScope] = useState<string>("");
+  const [scopeFilter, setScopeFilter] = useState("all");
 
   const { data: vaults, isLoading } = useQuery({
     queryKey: ["vaults"],
@@ -28,19 +33,51 @@ export default function VaultPage() {
     },
   });
 
+  const { data: scopes } = useQuery({
+    queryKey: ["scopes"],
+    queryFn: async () => {
+      const token = await getToken();
+      if (!token) throw new Error("Not authenticated");
+      return apiFetch<Array<{ id: string; name: string; role: string | null; is_personal: boolean }>>(
+        "/api/scopes",
+        token,
+      );
+    },
+  });
+  const scopeById = new Map((scopes ?? []).map((s) => [s.id, s.name]));
+
+  // Default the new-vault scope dropdown to Personal once scopes arrive.
+  useEffect(() => {
+    if (newVaultScope) return;
+    const personal = scopes?.find((s) => s.is_personal);
+    if (personal) setNewVaultScope(personal.id);
+  }, [scopes, newVaultScope]);
+
   const createVault = useMutation({
-    mutationFn: async (slug: string) => {
+    mutationFn: async () => {
       const token = await getToken();
       if (!token) throw new Error("Not authenticated");
       return apiFetch<any>("/api/vault", token, {
         method: "POST",
-        body: JSON.stringify({ slug, name: slug }),
+        body: JSON.stringify({
+          slug: newVaultSlug,
+          name: newVaultSlug,
+          scope_id: newVaultScope === "__private" ? "private" : newVaultScope,
+        }),
       });
     },
-    onSuccess: () => {
+    onSuccess: (result) => {
+      const slug = newVaultSlug;
       setNewVaultSlug("");
+      const personal = scopes?.find((s) => s.is_personal);
+      setNewVaultScope(personal?.id ?? "");
       queryClient.invalidateQueries({ queryKey: ["vaults"] });
+      const where = result.scope_id
+        ? `Created "${slug}" in ${scopeById.get(result.scope_id) ?? "scope"}`
+        : `Created "${slug}" as Private`;
+      toast.success(where);
     },
+    onError: (e: ApiError) => toast.error("Failed to create vault", { description: e.detail }),
   });
 
   const deleteVault = useMutation({
@@ -49,7 +86,11 @@ export default function VaultPage() {
       if (!token) throw new Error("Not authenticated");
       return apiFetch<any>(`/api/vault/${slug}`, token, { method: "DELETE" });
     },
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["vaults"] }),
+    onSuccess: (_, slug) => {
+      queryClient.invalidateQueries({ queryKey: ["vaults"] });
+      toast.success(`Deleted vault "${slug}"`);
+    },
+    onError: (e: ApiError) => toast.error("Delete failed", { description: e.detail }),
   });
 
   return (
@@ -74,7 +115,7 @@ export default function VaultPage() {
       </div>
 
       {/* Create vault */}
-      <div className="flex gap-2">
+      <div className="flex gap-2 flex-wrap">
         <input
           type="text"
           value={newVaultSlug}
@@ -84,21 +125,48 @@ export default function VaultPage() {
             )
           }
           placeholder="New vault name (e.g. ai-keys, prod)"
-          className="flex-1 border border-input bg-background rounded-xl px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+          className="flex-1 min-w-[200px] border border-input bg-background rounded-xl px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
           onKeyDown={(e) => {
-            if (e.key === "Enter" && newVaultSlug)
-              createVault.mutate(newVaultSlug);
+            if (e.key === "Enter" && newVaultSlug) createVault.mutate();
           }}
         />
+        <select
+          value={newVaultScope || "__private"}
+          onChange={(e) => setNewVaultScope(e.target.value)}
+          className="border border-input bg-background rounded-xl px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+          title="Scope"
+        >
+          {(scopes ?? [])
+            .filter((s) => s.role !== "reader")
+            .map((s) => (
+              <option key={s.id} value={s.id}>
+                {s.name}{s.is_personal ? " (default)" : ""}
+              </option>
+            ))}
+          <option value="__private">Private (only you)</option>
+        </select>
         <button
           type="button"
-          onClick={() => newVaultSlug && createVault.mutate(newVaultSlug)}
+          onClick={() => newVaultSlug && createVault.mutate()}
           disabled={!newVaultSlug || createVault.isPending}
           className="inline-flex items-center gap-1.5 bg-primary text-primary-foreground rounded-lg px-4 py-2 text-sm font-medium hover:bg-primary/90 disabled:opacity-50 transition-colors"
         >
           <Plus className="size-4" />
           Create
         </button>
+      </div>
+
+      {/* Scope filter */}
+      {scopes && scopes.length > 0 && (
+        <ScopeFilterBar scopes={scopes} value={scopeFilter} onChange={setScopeFilter} />
+      )}
+
+      <div className="rounded-md border border-dashed border-muted-foreground/30 px-3 py-2 text-xs text-muted-foreground">
+        Secret values are never shown in the web UI. Use{" "}
+        <code className="bg-muted px-1 rounded">clawdi vault set KEY</code> in a
+        terminal to add values, or{" "}
+        <code className="bg-muted px-1 rounded">clawdi run -- your-cmd</code> to
+        inject them into a subprocess.
       </div>
 
       {/* Vault list */}
@@ -112,35 +180,54 @@ export default function VaultPage() {
             </div>
           ))}
         </div>
-      ) : vaults?.length ? (
+      ) : (() => {
+        const visible = (vaults ?? []).filter((v: any) => {
+          if (scopeFilter === "all") return true;
+          if (scopeFilter === "private") return v.scope_id == null;
+          return v.scope_id === scopeFilter;
+        });
+        return visible.length ? (
         <div className="space-y-3">
-          {vaults.map((v: any) => (
+          {visible.map((v: any) => (
             <VaultCard
               key={v.id}
               vault={v}
-              onDelete={() => deleteVault.mutate(v.slug)}
+              scopes={scopes ?? []}
+              scopeName={v.scope_id ? scopeById.get(v.scope_id) : undefined}
+              onDelete={() => {
+                if (confirm(`Delete vault "${v.slug}"? All stored secrets will be lost.`)) {
+                  deleteVault.mutate(v.slug);
+                }
+              }}
               isDeleting={deleteVault.isPending}
             />
           ))}
         </div>
       ) : (
         <div className="rounded-lg border border-dashed p-6 text-center text-sm text-muted-foreground">
-          No vaults yet. Create one above or run{" "}
-          <code className="bg-muted px-1.5 py-0.5 rounded text-xs">
-            clawdi vault set KEY
-          </code>
+          {scopeFilter === "all"
+            ? <>No vaults yet. Create one above or run{" "}
+              <code className="bg-muted px-1.5 py-0.5 rounded text-xs">
+                clawdi vault set KEY
+              </code></>
+            : "No vaults match this filter."}
         </div>
-      )}
+      );
+      })()}
     </div>
   );
 }
 
 function VaultCard({
   vault,
+  scopes,
+  scopeName,
   onDelete,
   isDeleting,
 }: {
   vault: any;
+  scopes: Array<{ id: string; name: string; is_personal: boolean; role: string | null }>;
+  scopeName?: string;
   onDelete: () => void;
   isDeleting: boolean;
 }) {
@@ -149,6 +236,32 @@ function VaultCard({
   const [adding, setAdding] = useState(false);
   const [newKey, setNewKey] = useState("");
   const [newValue, setNewValue] = useState("");
+
+  const changeScope = useMutation({
+    mutationFn: async (newScopeId: string | null) => {
+      const token = await getToken();
+      if (!token) throw new Error("Not authenticated");
+      return apiFetch<any>(
+        `/api/vault/${vault.slug}/scope`,
+        token,
+        {
+          method: "PATCH",
+          body: JSON.stringify({
+            scope_id: newScopeId === null ? "private" : newScopeId,
+          }),
+        },
+      );
+    },
+    onSuccess: (_, newScopeId) => {
+      queryClient.invalidateQueries({ queryKey: ["vaults"] });
+      const label =
+        newScopeId === null
+          ? "Private"
+          : scopes.find((s) => s.id === newScopeId)?.name ?? "scope";
+      toast.success(`Moved "${vault.slug}" → ${label}`);
+    },
+    onError: (e: ApiError) => toast.error("Move failed", { description: e.detail }),
+  });
 
   const { data: items } = useQuery({
     queryKey: ["vault-items", vault.slug],
@@ -217,9 +330,18 @@ function VaultCard({
     <div className="group/vault rounded-lg border bg-card">
       {/* Header */}
       <div className="flex items-center justify-between px-4 py-3 border-b">
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 flex-wrap">
           <Key className="size-4 text-primary" />
           <span className="font-medium text-sm">{vault.slug}</span>
+          {scopeName ? (
+            <span className="text-[10px] rounded bg-primary/10 text-primary px-1.5 py-0.5 font-medium">
+              {scopeName}
+            </span>
+          ) : (
+            <span className="text-[10px] rounded bg-muted/50 text-muted-foreground px-1.5 py-0.5">
+              private
+            </span>
+          )}
           <span className="text-xs text-muted-foreground">
             {allFields.length} {allFields.length === 1 ? "key" : "keys"}
           </span>
@@ -233,14 +355,30 @@ function VaultCard({
             <Plus className="size-3.5" />
             Add Key
           </button>
-          <button
-            type="button"
-            onClick={onDelete}
-            disabled={isDeleting}
-            className="p-1.5 text-muted-foreground opacity-0 group-hover/vault:opacity-100 hover:text-destructive hover:bg-muted rounded-md transition-all disabled:opacity-50"
-          >
-            <Trash2 className="size-3.5" />
-          </button>
+          <RowActions alwaysVisible>
+            {scopes.filter((s) => s.role !== "reader").map((s) => (
+              <DropdownMenuItem
+                key={s.id}
+                disabled={vault.scope_id === s.id}
+                onClick={() => changeScope.mutate(s.id)}
+              >
+                Move to {s.name}{s.is_personal ? " (default)" : ""}
+                {vault.scope_id === s.id ? " ✓" : ""}
+              </DropdownMenuItem>
+            ))}
+            <DropdownMenuItem
+              disabled={vault.scope_id == null}
+              onClick={() => changeScope.mutate(null)}
+            >
+              Move to Private
+              {vault.scope_id == null ? " ✓" : ""}
+            </DropdownMenuItem>
+            <DropdownMenuSeparator />
+            <DropdownMenuItem onClick={onDelete} className="text-destructive">
+              <Trash2 className="size-3.5" />
+              Delete vault
+            </DropdownMenuItem>
+          </RowActions>
         </div>
       </div>
 

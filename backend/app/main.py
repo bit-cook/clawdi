@@ -10,6 +10,9 @@ from app.routes.settings import router as settings_router
 from app.routes.skills import router as skills_router
 from app.routes.connectors import router as connectors_router
 from app.routes.mcp_proxy import router as mcp_proxy_router
+from app.routes.environment_scopes import router as env_scopes_router
+from app.routes.scope_invitations import router as scope_invitations_router
+from app.routes.scopes import router as scopes_router
 from app.routes.vault import router as vault_router
 
 app = FastAPI(title=settings.app_name)
@@ -29,6 +32,9 @@ app.include_router(skills_router)
 app.include_router(memories_router)
 app.include_router(settings_router)
 app.include_router(vault_router)
+app.include_router(scopes_router)
+app.include_router(env_scopes_router)
+app.include_router(scope_invitations_router)
 app.include_router(connectors_router)
 app.include_router(mcp_proxy_router)
 

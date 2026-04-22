@@ -4,7 +4,8 @@ import {
   BarChart3,
   Brain,
   ChevronUp,
-
+  Cpu,
+  FolderKanban,
   Key,
   LayoutDashboard,
   LogOut,
@@ -27,6 +28,8 @@ import { SettingsDialog } from "@/components/settings-dialog";
 
 const navItems = [
   { href: "/", label: "Overview", icon: LayoutDashboard },
+  { href: "/scopes", label: "Scopes", icon: FolderKanban },
+  { href: "/agents", label: "Agents", icon: Cpu },
   { href: "/sessions", label: "Sessions", icon: BarChart3 },
   { href: "/memories", label: "Memories", icon: Brain },
   { href: "/skills", label: "Skills", icon: Sparkles },

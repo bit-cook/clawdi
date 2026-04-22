@@ -1,0 +1,17 @@
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: clawdi_postgres
+    environment:
+      POSTGRES_USER: clawdi
+      POSTGRES_PASSWORD: clawdi_dev
+      POSTGRES_DB: clawdi_cloud
+    ports:
+      - "5433:5432"
+    volumes:
+      - ./data/postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U clawdi -d clawdi_cloud"]
+      interval: 5s
+      timeout: 3s
+      retries: 10

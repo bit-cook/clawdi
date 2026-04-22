@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.auth import AuthContext, get_auth
 from app.core.database import get_session
 from app.models.api_key import ApiKey
+from app.models.user import User
 from app.schemas.api_key import ApiKeyCreate, ApiKeyCreated, ApiKeyResponse
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
@@ -104,3 +105,30 @@ async def get_me(auth: AuthContext = Depends(get_auth)):
         "name": auth.user.name,
         "auth_type": "api_key" if auth.is_cli else "clerk",
     }
+
+
+# ---------------------------------------------------------------------------
+# User lookup for invitations
+# ---------------------------------------------------------------------------
+
+@router.get("/users/search")
+async def search_user_by_email(
+    email: str,
+    auth: AuthContext = Depends(get_auth),
+    db: AsyncSession = Depends(get_session),
+):
+    """Exact-email lookup — used by scope owner to decide whether to add
+    directly or send an invite link.
+
+    Returns 404 for both "not registered" and "rate-limit exceeded" to minimize
+    user enumeration (future: add an actual rate limiter; this is a stub).
+    """
+    normalized = email.lower().strip()
+    if not normalized or "@" not in normalized:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Invalid email")
+
+    result = await db.execute(select(User).where(User.email == normalized))
+    user = result.scalar_one_or_none()
+    if not user:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "No user with that email")
+    return {"id": str(user.id), "email": user.email}

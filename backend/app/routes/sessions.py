@@ -41,6 +41,9 @@ async def register_environment(
         await db.commit()
         return {"id": str(env.id)}
 
+    from app.models.env_scope import AgentEnvironmentScope
+
+    default_scope = auth.user.default_scope_id
     env = AgentEnvironment(
         user_id=auth.user_id,
         machine_id=body.machine_id,
@@ -49,11 +52,64 @@ async def register_environment(
         agent_version=body.agent_version,
         os=body.os,
         last_seen_at=datetime.now(timezone.utc),
+        default_write_scope_id=default_scope,
     )
     db.add(env)
+    await db.flush()
+
+    # Auto-subscribe new env to the user's default (Personal) scope so reads
+    # and writes from that agent flow through Personal immediately after setup.
+    if default_scope:
+        db.add(AgentEnvironmentScope(environment_id=env.id, scope_id=default_scope))
+
     await db.commit()
     await db.refresh(env)
     return {"id": str(env.id)}
+
+
+@router.delete("/api/environments/{env_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def unregister_environment(
+    env_id: uuid.UUID,
+    auth: AuthContext = Depends(get_auth),
+    db: AsyncSession = Depends(get_session),
+):
+    """Remove an agent environment.
+
+    Cascade drops subscriptions (via FK ON DELETE CASCADE) but leaves sessions
+    orphaned with stale environment_id — the session rows remain for history.
+    """
+    result = await db.execute(
+        select(AgentEnvironment).where(AgentEnvironment.id == env_id)
+    )
+    env = result.scalar_one_or_none()
+    if not env or env.user_id != auth.user_id:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "Not your environment")
+    await db.delete(env)
+    await db.commit()
+
+
+@router.post("/api/environments/{env_id}/heartbeat")
+async def heartbeat(
+    env_id: uuid.UUID,
+    auth: AuthContext = Depends(get_auth),
+    db: AsyncSession = Depends(get_session),
+):
+    """Bump last_seen_at, throttled to at most once per 60s."""
+    result = await db.execute(
+        select(AgentEnvironment).where(AgentEnvironment.id == env_id)
+    )
+    env = result.scalar_one_or_none()
+    if not env or env.user_id != auth.user_id:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "Not your environment")
+
+    now = datetime.now(timezone.utc)
+    # Avoid write amplification: skip if updated within the last 60 seconds.
+    if env.last_seen_at and (now - env.last_seen_at).total_seconds() < 60:
+        return {"status": "ok", "last_seen_at": env.last_seen_at.isoformat()}
+
+    env.last_seen_at = now
+    await db.commit()
+    return {"status": "ok", "last_seen_at": now.isoformat()}
 
 
 @router.get("/api/environments")
@@ -61,12 +117,27 @@ async def list_environments(
     auth: AuthContext = Depends(get_auth),
     db: AsyncSession = Depends(get_session),
 ):
+    from app.models.env_scope import AgentEnvironmentScope
+
     result = await db.execute(
         select(AgentEnvironment)
         .where(AgentEnvironment.user_id == auth.user_id)
-        .order_by(AgentEnvironment.last_seen_at.desc())
+        .order_by(AgentEnvironment.last_seen_at.desc().nullslast(), AgentEnvironment.created_at.desc())
     )
     envs = result.scalars().all()
+
+    # Load all subscriptions for this user's envs in one query
+    env_ids = [e.id for e in envs]
+    subs_by_env: dict = {eid: [] for eid in env_ids}
+    if env_ids:
+        sub_result = await db.execute(
+            select(AgentEnvironmentScope).where(
+                AgentEnvironmentScope.environment_id.in_(env_ids)
+            )
+        )
+        for s in sub_result.scalars().all():
+            subs_by_env.setdefault(s.environment_id, []).append(str(s.scope_id))
+
     return [
         {
             "id": str(e.id),
@@ -75,6 +146,9 @@ async def list_environments(
             "agent_version": e.agent_version,
             "os": e.os,
             "last_seen_at": e.last_seen_at.isoformat() if e.last_seen_at else None,
+            "created_at": e.created_at.isoformat(),
+            "subscribed_scope_ids": subs_by_env.get(e.id, []),
+            "default_write_scope_id": str(e.default_write_scope_id) if e.default_write_scope_id else None,
         }
         for e in envs
     ]

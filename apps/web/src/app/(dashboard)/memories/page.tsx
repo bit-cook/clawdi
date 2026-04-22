@@ -16,9 +16,14 @@ import {
   Trash2,
   X,
 } from "lucide-react";
-import { useDeferredValue, useState } from "react";
+import { useDeferredValue, useEffect, useState } from "react";
+import { toast } from "sonner";
+import { ManageScopesSheet } from "@/components/manage-scopes-sheet";
+import { RowActions, DropdownMenuItem, DropdownMenuSeparator } from "@/components/row-actions";
+import { ScopeChips } from "@/components/scope-chips";
+import { ScopeFilterBar } from "@/components/scope-filter-bar";
 import { Skeleton } from "@/components/ui/skeleton";
-import { apiFetch } from "@/lib/api";
+import { apiFetch, ApiError } from "@/lib/api";
 import { cn, relativeTime } from "@/lib/utils";
 
 const CATEGORIES = [
@@ -43,7 +48,21 @@ export default function MemoriesPage() {
   const queryClient = useQueryClient();
   const [searchQuery, setSearchQuery] = useState("");
   const [category, setCategory] = useState("");
+  const [scopeFilter, setScopeFilter] = useState("all");
   const deferredQuery = useDeferredValue(searchQuery);
+
+  const { data: scopes } = useQuery({
+    queryKey: ["scopes"],
+    queryFn: async () => {
+      const token = await getToken();
+      if (!token) throw new Error("Not authenticated");
+      return apiFetch<Array<{ id: string; name: string; is_personal: boolean; role: string | null }>>(
+        "/api/scopes",
+        token,
+      );
+    },
+  });
+  const scopeById = new Map((scopes ?? []).map((s) => [s.id, s.name]));
 
   // --- Settings (provider) ---
   const { data: settings } = useQuery({
@@ -93,8 +112,12 @@ export default function MemoriesPage() {
       if (!token) throw new Error("Not authenticated");
       return apiFetch<any>(`/api/memories/${id}`, token, { method: "DELETE" });
     },
-    onSuccess: () =>
-      queryClient.invalidateQueries({ queryKey: ["memories"] }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["memories"] });
+      queryClient.invalidateQueries({ queryKey: ["memories-all"] });
+      toast.success("Memory deleted");
+    },
+    onError: (e: ApiError) => toast.error("Delete failed", { description: e.detail }),
   });
 
   return (
@@ -174,6 +197,13 @@ export default function MemoriesPage() {
             </button>
           ))}
         </div>
+        {scopes && scopes.length > 0 && (
+          <ScopeFilterBar
+            scopes={scopes}
+            value={scopeFilter}
+            onChange={setScopeFilter}
+          />
+        )}
       </div>
 
       {/* Memory list */}
@@ -192,59 +222,36 @@ export default function MemoriesPage() {
             </div>
           ))}
         </div>
-      ) : memories?.length ? (
+      ) : (() => {
+        const visible = (memories ?? []).filter((m: any) => {
+          const sids: string[] = m.scope_ids ?? [];
+          if (scopeFilter === "all") return true;
+          if (scopeFilter === "private") return sids.length === 0;
+          return sids.includes(scopeFilter);
+        });
+        return visible.length ? (
         <div className="space-y-2">
-          {memories.map((m: any) => (
-            <div
+          {visible.map((m: any) => (
+            <MemoryRow
               key={m.id}
-              className="group flex items-start justify-between gap-3 rounded-lg border bg-card px-4 py-3"
-            >
-              <div className="min-w-0 flex-1">
-                <p className="text-sm">{m.content}</p>
-                <div className="flex items-center gap-2 mt-1.5">
-                  <span
-                    className={cn(
-                      "text-[10px] font-medium px-1.5 py-0.5 rounded-full",
-                      CATEGORY_COLORS[m.category] ||
-                        "bg-muted text-muted-foreground",
-                    )}
-                  >
-                    {m.category}
-                  </span>
-                  <span className="text-xs text-muted-foreground">
-                    {m.source}
-                  </span>
-                  {m.tags?.map((t: string) => (
-                    <span
-                      key={t}
-                      className="text-xs text-muted-foreground"
-                    >
-                      #{t}
-                    </span>
-                  ))}
-                  <span className="text-xs text-muted-foreground">
-                    {relativeTime(m.created_at)}
-                  </span>
-                </div>
-              </div>
-              <button
-                type="button"
-                onClick={() => deleteMemory.mutate(m.id)}
-                disabled={deleteMemory.isPending}
-                className="p-1.5 text-muted-foreground opacity-0 group-hover:opacity-100 hover:text-destructive hover:bg-muted rounded-md transition-all shrink-0 disabled:opacity-50"
-              >
-                <Trash2 className="size-3.5" />
-              </button>
-            </div>
+              memory={m}
+              scopes={(scopes ?? []) as any}
+              onDelete={() => {
+                if (confirm("Delete this memory?")) {
+                  deleteMemory.mutate(m.id);
+                }
+              }}
+            />
           ))}
         </div>
       ) : (
         <div className="rounded-lg border border-dashed p-6 text-center text-sm text-muted-foreground">
-          {searchQuery || category
-            ? "No memories match your search."
+          {searchQuery || category || scopeFilter !== "all"
+            ? "No memories match your filters."
             : 'No memories yet. Add one above or use `clawdi memory add "..."`'}
         </div>
-      )}
+      );
+      })()}
     </div>
   );
 }
@@ -252,6 +259,66 @@ export default function MemoriesPage() {
 // ---------------------------------------------------------------------------
 // Sub-components
 // ---------------------------------------------------------------------------
+
+function MemoryRow({
+  memory,
+  scopes,
+  onDelete,
+}: {
+  memory: any;
+  scopes: Array<{ id: string; name: string; is_personal: boolean; role: string | null }>;
+  onDelete: () => void;
+}) {
+  const [sheetOpen, setSheetOpen] = useState(false);
+  return (
+    <div className="group flex items-start justify-between gap-3 rounded-lg border bg-card px-4 py-3">
+      <div className="min-w-0 flex-1">
+        <p className="text-sm">{memory.content}</p>
+        <div className="flex items-center gap-2 mt-1.5 flex-wrap">
+          <span
+            className={cn(
+              "text-[10px] font-medium px-1.5 py-0.5 rounded-full",
+              CATEGORY_COLORS[memory.category] || "bg-muted text-muted-foreground",
+            )}
+          >
+            {memory.category}
+          </span>
+          <ScopeChips scopeIds={memory.scope_ids ?? []} scopes={scopes} readonly />
+          <span className="text-xs text-muted-foreground">{memory.source}</span>
+          {memory.tags?.map((t: string) => (
+            <span key={t} className="text-xs text-muted-foreground">
+              #{t}
+            </span>
+          ))}
+          <span className="text-xs text-muted-foreground">
+            {relativeTime(memory.created_at)}
+          </span>
+        </div>
+      </div>
+      <div className="shrink-0">
+        <RowActions alwaysVisible>
+          <DropdownMenuItem onClick={() => setSheetOpen(true)}>
+            Manage scopes…
+          </DropdownMenuItem>
+          <DropdownMenuSeparator />
+          <DropdownMenuItem onClick={onDelete} className="text-destructive">
+            <Trash2 className="size-3.5" />
+            Delete memory
+          </DropdownMenuItem>
+        </RowActions>
+      </div>
+      {sheetOpen && (
+        <ManageScopesSheet
+          open={sheetOpen}
+          onClose={() => setSheetOpen(false)}
+          currentScopeIds={memory.scope_ids ?? []}
+          scopes={scopes}
+          mutateEndpoint={`/api/memories/${memory.id}/scopes`}
+        />
+      )}
+    </div>
+  );
+}
 
 function ProviderSwitch({
   provider,
@@ -351,6 +418,33 @@ function AddMemoryForm() {
   const [open, setOpen] = useState(false);
   const [content, setContent] = useState("");
   const [addCategory, setAddCategory] = useState("fact");
+  // "" sentinel means "haven't picked yet → use Personal".
+  // After scopes load, we pre-select the Personal scope id so the dropdown
+  // shows the real default instead of misleadingly reading "private".
+  const [addScope, setAddScope] = useState<string>("");
+
+  const { data: scopes } = useQuery({
+    queryKey: ["scopes"],
+    queryFn: async () => {
+      const token = await getToken();
+      if (!token) throw new Error("Not authenticated");
+      return apiFetch<Array<{ id: string; name: string; role: string | null; is_personal: boolean }>>(
+        "/api/scopes",
+        token,
+      );
+    },
+    enabled: open,
+  });
+
+  // Default the scope selector to Personal once scopes are loaded.
+  useEffect(() => {
+    if (!open) return;
+    if (addScope) return;
+    const personal = scopes?.find((s) => s.is_personal);
+    if (personal) setAddScope(personal.id);
+  }, [open, scopes, addScope]);
+
+  const scopeById = new Map((scopes ?? []).map((s) => [s.id, s.name]));
 
   const createMemory = useMutation({
     mutationFn: async () => {
@@ -362,14 +456,23 @@ function AddMemoryForm() {
           content,
           category: addCategory,
           source: "web",
+          // "__private" sentinel → explicit private; anything else is a UUID.
+          scope_id: addScope === "__private" ? "private" : addScope,
         }),
       });
     },
-    onSuccess: () => {
+    onSuccess: (saved) => {
       setContent("");
       setOpen(false);
       queryClient.invalidateQueries({ queryKey: ["memories"] });
+      queryClient.invalidateQueries({ queryKey: ["memories-all"] });
+      const where = saved?.scope_id
+        ? `Saved to ${scopeById.get(saved.scope_id) ?? "scope"}`
+        : "Saved as Private";
+      toast.success(where);
     },
+    onError: (e: ApiError) =>
+      toast.error("Failed to save memory", { description: e.detail }),
   });
 
   if (!open) {
@@ -395,20 +498,39 @@ function AddMemoryForm() {
         className="w-full border border-input bg-background rounded-md px-3 py-2 text-sm resize-none focus:outline-none focus:ring-2 focus:ring-ring"
         autoFocus
       />
-      <div className="flex items-center justify-between">
-        <div className="flex items-center gap-2">
-          <span className="text-xs text-muted-foreground">Category:</span>
-          <select
-            value={addCategory}
-            onChange={(e) => setAddCategory(e.target.value)}
-            className="border border-input bg-background rounded-md px-2 py-1 text-xs focus:outline-none focus:ring-2 focus:ring-ring"
-          >
-            {CATEGORIES.filter((c) => c.value).map((c) => (
-              <option key={c.value} value={c.value}>
-                {c.label}
-              </option>
-            ))}
-          </select>
+      <div className="flex items-center justify-between flex-wrap gap-3">
+        <div className="flex items-center gap-3 flex-wrap">
+          <div className="flex items-center gap-2">
+            <span className="text-xs text-muted-foreground">Category:</span>
+            <select
+              value={addCategory}
+              onChange={(e) => setAddCategory(e.target.value)}
+              className="border border-input bg-background rounded-md px-2 py-1 text-xs focus:outline-none focus:ring-2 focus:ring-ring"
+            >
+              {CATEGORIES.filter((c) => c.value).map((c) => (
+                <option key={c.value} value={c.value}>
+                  {c.label}
+                </option>
+              ))}
+            </select>
+          </div>
+          <div className="flex items-center gap-2">
+            <span className="text-xs text-muted-foreground">Save to:</span>
+            <select
+              value={addScope || "__private"}
+              onChange={(e) => setAddScope(e.target.value)}
+              className="border border-input bg-background rounded-md px-2 py-1 text-xs focus:outline-none focus:ring-2 focus:ring-ring"
+            >
+              {(scopes ?? [])
+                .filter((s) => s.role !== "reader")
+                .map((s) => (
+                  <option key={s.id} value={s.id}>
+                    {s.name}{s.is_personal ? " (default)" : ""}
+                  </option>
+                ))}
+              <option value="__private">Private (only you)</option>
+            </select>
+          </div>
         </div>
         <div className="flex items-center gap-2">
           <button

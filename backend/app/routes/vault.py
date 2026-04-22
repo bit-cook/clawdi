@@ -1,10 +1,13 @@
+import uuid
+
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.auth import AuthContext, get_auth, require_cli_auth
 from app.core.database import get_session
+from app.models.scope import ScopeMembership
 from app.models.vault import Vault, VaultItem
 from app.services.vault_crypto import decrypt, encrypt
 
@@ -14,6 +17,39 @@ router = APIRouter(prefix="/api/vault", tags=["vault"])
 class VaultCreate(BaseModel):
     slug: str
     name: str
+    scope_id: str | None = None
+
+
+async def _validate_scope_write(
+    db: AsyncSession,
+    scope_id_str: str | None,
+    user_id: uuid.UUID,
+    fallback_default: uuid.UUID | None = None,
+) -> uuid.UUID | None:
+    """See skills.py:_validate_scope_write for the resolution rules."""
+    if scope_id_str is None:
+        sid = fallback_default
+        if sid is None:
+            return None
+    elif scope_id_str in ("", "private", "none"):
+        return None
+    else:
+        try:
+            sid = uuid.UUID(scope_id_str)
+        except ValueError:
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, "Invalid scope_id")
+    result = await db.execute(
+        select(ScopeMembership).where(
+            ScopeMembership.scope_id == sid,
+            ScopeMembership.user_id == user_id,
+        )
+    )
+    m = result.scalar_one_or_none()
+    if not m or m.role == "reader":
+        raise HTTPException(
+            status.HTTP_403_FORBIDDEN, "Need writer or owner role on this scope"
+        )
+    return sid
 
 
 class VaultItemUpsert(BaseModel):
@@ -34,11 +70,27 @@ async def list_vaults(
     auth: AuthContext = Depends(get_auth),
     db: AsyncSession = Depends(get_session),
 ):
-    result = await db.execute(
-        select(Vault).where(Vault.user_id == auth.user_id).order_by(Vault.slug)
-    )
+    query = select(Vault).where(Vault.user_id == auth.user_id)
+    if auth.environment_id:
+        if auth.subscribed_scope_ids:
+            query = query.where(
+                or_(
+                    Vault.scope_id.is_(None),
+                    Vault.scope_id.in_(auth.subscribed_scope_ids),
+                )
+            )
+        else:
+            query = query.where(Vault.scope_id.is_(None))
+    query = query.order_by(Vault.slug)
+    result = await db.execute(query)
     return [
-        {"id": str(v.id), "slug": v.slug, "name": v.name, "created_at": v.created_at.isoformat()}
+        {
+            "id": str(v.id),
+            "slug": v.slug,
+            "name": v.name,
+            "scope_id": str(v.scope_id) if v.scope_id else None,
+            "created_at": v.created_at.isoformat(),
+        }
         for v in result.scalars().all()
     ]
 
@@ -55,11 +107,42 @@ async def create_vault(
     if existing.scalar_one_or_none():
         raise HTTPException(status.HTTP_409_CONFLICT, f"Vault '{body.slug}' already exists")
 
-    vault = Vault(user_id=auth.user_id, slug=body.slug, name=body.name)
+    scope_uuid = await _validate_scope_write(
+        db, body.scope_id, auth.user_id, fallback_default=auth.default_write_scope_id
+    )
+    vault = Vault(user_id=auth.user_id, slug=body.slug, name=body.name, scope_id=scope_uuid)
     db.add(vault)
     await db.commit()
     await db.refresh(vault)
-    return {"id": str(vault.id), "slug": vault.slug}
+    return {
+        "id": str(vault.id),
+        "slug": vault.slug,
+        "scope_id": str(vault.scope_id) if vault.scope_id else None,
+    }
+
+
+class VaultScopeUpdate(BaseModel):
+    scope_id: str | None = None  # "private" / empty / null → clear scope
+
+
+@router.patch("/{slug}/scope")
+async def update_vault_scope(
+    slug: str,
+    body: VaultScopeUpdate,
+    auth: AuthContext = Depends(get_auth),
+    db: AsyncSession = Depends(get_session),
+):
+    result = await db.execute(
+        select(Vault).where(Vault.user_id == auth.user_id, Vault.slug == slug)
+    )
+    vault = result.scalar_one_or_none()
+    if not vault:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Vault not found")
+
+    new_scope = await _validate_scope_write(db, body.scope_id, auth.user_id)
+    vault.scope_id = new_scope
+    await db.commit()
+    return {"scope_id": str(new_scope) if new_scope else None}
 
 
 @router.delete("/{slug}")
