@@ -1,33 +1,59 @@
 import chalk from "chalk";
-import { existsSync, readFileSync } from "node:fs";
-import { join } from "node:path";
-import { getAuth, getClawdiDir, getConfig, isLoggedIn } from "../lib/config";
+import type { SyncState } from "@clawdi-cloud/shared/types";
+import { getAuth, getConfig, isLoggedIn } from "../lib/config";
+import { getSyncState } from "./sync/state";
 
-export async function status() {
+interface StatusJson {
+	loggedIn: boolean;
+	user?: { email?: string; id?: string };
+	apiUrl: string;
+	sync: Record<string, { lastSyncedAt: string }>;
+}
+
+function buildStatus(): StatusJson {
 	const config = getConfig();
+	const auth = getAuth();
+	const sync = (getSyncState() ?? {}) as SyncState;
+	const entries: Record<string, { lastSyncedAt: string }> = {};
+	for (const [k, v] of Object.entries(sync)) {
+		if (v && typeof v === "object" && "lastSyncedAt" in v && typeof v.lastSyncedAt === "string") {
+			entries[k] = { lastSyncedAt: v.lastSyncedAt };
+		}
+	}
+	return {
+		loggedIn: isLoggedIn(),
+		user: auth ? { email: auth.email, id: auth.userId } : undefined,
+		apiUrl: config.apiUrl,
+		sync: entries,
+	};
+}
+
+export async function status(opts: { json?: boolean } = {}) {
+	const s = buildStatus();
+
+	if (opts.json || !process.stdout.isTTY) {
+		console.log(JSON.stringify(s, null, 2));
+		return;
+	}
 
 	console.log(chalk.bold("Clawdi Cloud Status"));
 	console.log();
 
-	// Auth
-	if (isLoggedIn()) {
-		const auth = getAuth()!;
+	if (s.loggedIn) {
 		console.log(chalk.green("  Auth:    ✓ logged in"));
-		console.log(chalk.gray(`  User:    ${auth.email || auth.userId || "unknown"}`));
-		console.log(chalk.gray(`  API:     ${config.apiUrl}`));
+		console.log(chalk.gray(`  User:    ${s.user?.email || s.user?.id || "unknown"}`));
+		console.log(chalk.gray(`  API:     ${s.apiUrl}`));
 	} else {
 		console.log(chalk.red("  Auth:    ✗ not logged in"));
-		console.log(chalk.gray('  Run `clawdi login` to authenticate.'));
+		console.log(chalk.gray("  Run `clawdi auth login` to authenticate."));
 	}
 
 	console.log();
 
-	// Sync state
-	const syncPath = join(getClawdiDir(), "sync.json");
-	if (existsSync(syncPath)) {
-		const sync = JSON.parse(readFileSync(syncPath, "utf-8"));
+	const syncEntries = Object.entries(s.sync);
+	if (syncEntries.length > 0) {
 		console.log(chalk.bold("  Sync:"));
-		for (const [module, state] of Object.entries(sync) as [string, { lastSyncedAt: string }][]) {
+		for (const [module, state] of syncEntries) {
 			const ago = timeSince(new Date(state.lastSyncedAt));
 			console.log(chalk.gray(`    ${module}: last synced ${ago}`));
 		}

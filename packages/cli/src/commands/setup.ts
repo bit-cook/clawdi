@@ -1,29 +1,26 @@
+import * as p from "@clack/prompts";
 import chalk from "chalk";
 import { execSync } from "node:child_process";
 import { createHash } from "node:crypto";
+import { cpSync, existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { hostname } from "node:os";
-import { createInterface } from "node:readline/promises";
-import { writeFileSync, mkdirSync, cpSync, existsSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { AGENT_TYPES, AGENT_LABELS, type AgentType } from "@clawdi-cloud/shared/consts";
-import { ClaudeCodeAdapter } from "../adapters/claude-code";
-import { CodexAdapter } from "../adapters/codex";
-import { HermesAdapter } from "../adapters/hermes";
-import { OpenClawAdapter } from "../adapters/openclaw";
+import {
+	AGENT_LABELS,
+	AGENT_TYPES,
+	type AgentType,
+} from "@clawdi-cloud/shared/consts";
 import type { AgentAdapter } from "../adapters/base";
+import { getHermesHome } from "../adapters/paths";
+import { adapterRegistry, allAdapterEntries } from "../adapters/registry";
 import { ApiClient } from "../lib/api-client";
 import { getClawdiDir, isLoggedIn } from "../lib/config";
+import { isInteractive } from "../lib/tty";
 
-const allAdapters: AgentAdapter[] = [
-	new ClaudeCodeAdapter(),
-	new HermesAdapter(),
-	new OpenClawAdapter(),
-	new CodexAdapter(),
-];
-
-export async function setup(opts: { agent?: string }) {
+export async function setup(opts: { agent?: string; yes?: boolean }) {
 	if (!isLoggedIn()) {
-		console.log(chalk.red("Not logged in. Run `clawdi login` first."));
+		console.log(chalk.red("Not logged in. Run `clawdi auth login` first."));
+		process.exitCode = 1;
 		return;
 	}
 
@@ -38,11 +35,13 @@ export async function setup(opts: { agent?: string }) {
 		if (!AGENT_TYPES.includes(opts.agent as AgentType)) {
 			console.log(chalk.red(`Unknown agent type: ${opts.agent}`));
 			console.log(chalk.gray(`Valid types: ${AGENT_TYPES.join(", ")}`));
+			process.exitCode = 1;
 			return;
 		}
-		await registerEnv(api, opts.agent as AgentType, null, machineId, machineName);
-		await registerMcpServer(opts.agent as AgentType);
-		await installBuiltinSkill(opts.agent as AgentType);
+		const type = opts.agent as AgentType;
+		await registerEnv(api, type, null, machineId, machineName);
+		await registerMcpServer(type);
+		await installBuiltinSkill(type);
 		return;
 	}
 
@@ -50,7 +49,8 @@ export async function setup(opts: { agent?: string }) {
 	console.log(chalk.cyan("Detecting installed agents..."));
 	const detected: { adapter: AgentAdapter; version: string | null }[] = [];
 
-	for (const adapter of allAdapters) {
+	for (const entry of allAdapterEntries()) {
+		const adapter = entry.create();
 		if (await adapter.detect()) {
 			const version = await adapter.getVersion();
 			detected.push({ adapter, version });
@@ -63,21 +63,29 @@ export async function setup(opts: { agent?: string }) {
 		return;
 	}
 
-	// Show detected and ask user to confirm each
-	console.log();
-	const rl = createInterface({ input: process.stdin, output: process.stdout });
-	const toRegister: typeof detected = [];
-
-	try {
-		for (const d of detected) {
-			const label = `${AGENT_LABELS[d.adapter.agentType]}${d.version ? ` (${d.version})` : ""}`;
-			const answer = await rl.question(chalk.cyan(`  Register ${label}? [Y/n] `));
-			if (answer.toLowerCase() !== "n") {
-				toRegister.push(d);
-			}
+	// Select which detected agents to register. --yes auto-picks all;
+	// non-interactive (CI / piped) also picks all so scripts can run setup.
+	let toRegister: typeof detected;
+	if (opts.yes || !isInteractive()) {
+		toRegister = detected;
+	} else {
+		console.log();
+		const result = await p.multiselect<string>({
+			message: "Register which agents?",
+			// biome-ignore lint/suspicious/noExplicitAny: @clack/prompts Option<T> generics
+			options: detected.map((d) => ({
+				value: d.adapter.agentType,
+				label: `${AGENT_LABELS[d.adapter.agentType]}${d.version ? ` (${d.version})` : ""}`,
+			})) as any,
+			initialValues: detected.map((d) => d.adapter.agentType),
+			required: false,
+		});
+		if (p.isCancel(result)) {
+			p.cancel("Cancelled.");
+			return;
 		}
-	} finally {
-		rl.close();
+		const picked = new Set(result as string[]);
+		toRegister = detected.filter((d) => picked.has(d.adapter.agentType));
 	}
 
 	if (toRegister.length === 0) {
@@ -113,40 +121,48 @@ async function registerEnv(
 		mkdirSync(envDir, { recursive: true });
 		writeFileSync(
 			join(envDir, `${agentType}.json`),
-			JSON.stringify({ id: env.id, agentType, machineId, machineName }, null, 2) + "\n",
+			JSON.stringify(
+				{ id: env.id, agentType, machineId, machineName },
+				null,
+				2,
+			) + "\n",
 			{ mode: 0o600 },
 		);
 
 		console.log(chalk.green(`✓ ${AGENT_LABELS[agentType]} registered`));
-	} catch (e: any) {
-		console.log(chalk.red(`  Failed to register ${AGENT_LABELS[agentType]}: ${e.message}`));
+	} catch (e) {
+		console.log(
+			chalk.red(`  Failed to register ${AGENT_LABELS[agentType]}: ${(e as Error).message}`),
+		);
 	}
 }
 
-async function installBuiltinSkill(agentType: AgentType) {
-	const homedir = (await import("node:os")).homedir();
-
-	let targetDir: string;
-	let label: string;
-	if (agentType === "claude_code") {
-		targetDir = join(homedir, ".claude", "skills", "clawdi");
-		label = "Claude Code";
-	} else if (agentType === "hermes") {
-		const hermesHome = process.env.HERMES_HOME || join(homedir, ".hermes");
-		targetDir = join(hermesHome, "skills", "clawdi");
-		label = "Hermes";
-	} else if (agentType === "openclaw") {
-		const openclawDir = process.env.OPENCLAW_STATE_DIR || join(homedir, ".openclaw");
+/**
+ * Resolve where the built-in `clawdi` skill should land for each agent.
+ * Reuses adapter `home()` resolvers (which honor $CLAUDE_CONFIG_DIR /
+ * $CODEX_HOME / $HERMES_HOME / $OPENCLAW_STATE_DIR) so this never drifts
+ * from where the adapter actually reads skills back out.
+ */
+function builtinSkillTargetDir(agentType: AgentType): string | null {
+	const home = adapterRegistry[agentType].home();
+	if (agentType === "openclaw") {
 		const openclawAgentId = process.env.OPENCLAW_AGENT_ID || "main";
-		targetDir = join(openclawDir, "agents", openclawAgentId, "skills", "clawdi");
-		label = "OpenClaw";
-	} else if (agentType === "codex") {
-		const codexHome = process.env.CODEX_HOME || join(homedir, ".codex");
-		targetDir = join(codexHome, "skills", "clawdi");
-		label = "Codex";
-	} else {
-		return;
+		return join(home, "agents", openclawAgentId, "skills", "clawdi");
 	}
+	if (
+		agentType === "claude_code" ||
+		agentType === "codex" ||
+		agentType === "hermes"
+	) {
+		return join(home, "skills", "clawdi");
+	}
+	return null;
+}
+
+async function installBuiltinSkill(agentType: AgentType) {
+	const targetDir = builtinSkillTargetDir(agentType);
+	if (!targetDir) return;
+	const label = AGENT_LABELS[agentType];
 
 	// Support both dev (src/commands/) and build (dist/) paths
 	let sourceDir = resolve(import.meta.dirname, "../../skills/clawdi");
@@ -178,21 +194,18 @@ async function installBuiltinSkill(agentType: AgentType) {
 }
 
 async function registerMcpServer(agentType: AgentType) {
-	if (agentType === "hermes") {
-		return registerHermesMcp();
-	}
-	if (agentType === "openclaw") {
-		return registerOpenClawMcp();
-	}
-	if (agentType === "codex") {
-		return registerCodexMcp();
-	}
+	if (agentType === "hermes") return registerHermesMcp();
+	if (agentType === "openclaw") return registerOpenClawMcp();
+	if (agentType === "codex") return registerCodexMcp();
 	if (agentType !== "claude_code") return;
 
-	// Check if already registered
+	// Check if already registered. `claude mcp list` prints entries like
+	// `  clawdi:   stdio  ...` — match the name as its own token at the start
+	// of a line to avoid false hits from unrelated server names containing
+	// the substring "clawdi:".
 	try {
 		const list = execSync("claude mcp list", { encoding: "utf-8", stdio: "pipe" });
-		if (list.includes("clawdi:")) {
+		if (/^\s*clawdi:\s/m.test(list)) {
 			console.log(chalk.gray("✓ MCP server already registered"));
 			return;
 		}
@@ -214,14 +227,14 @@ async function registerMcpServer(agentType: AgentType) {
 		console.log(chalk.green("✓ MCP server registered in Claude Code"));
 	} catch {
 		console.log(chalk.yellow("⚠ Could not auto-register MCP server."));
-		console.log(chalk.gray(`  Run manually: claude mcp add-json clawdi '${mcpConfig}' --scope user`));
+		console.log(
+			chalk.gray(`  Run manually: claude mcp add-json clawdi '${mcpConfig}' --scope user`),
+		);
 	}
 }
 
 async function registerHermesMcp() {
-	const homedir = (await import("node:os")).homedir();
-	const hermesHome = process.env.HERMES_HOME || join(homedir, ".hermes");
-	const configPath = join(hermesHome, "config.yaml");
+	const configPath = join(getHermesHome(), "config.yaml");
 
 	if (!existsSync(configPath)) {
 		console.log(chalk.yellow("⚠ Hermes config.yaml not found, skipping MCP registration."));
@@ -264,8 +277,10 @@ async function registerHermesMcp() {
 
 		writeFs(configPath, updated);
 		console.log(chalk.green("✓ MCP server registered in Hermes"));
-	} catch (e: any) {
-		console.log(chalk.yellow(`⚠ Could not register MCP server in Hermes config: ${e.message}`));
+	} catch (e) {
+		console.log(
+			chalk.yellow(`⚠ Could not register MCP server in Hermes config: ${(e as Error).message}`),
+		);
 		console.log(chalk.gray(`  Edit ${configPath} and add under mcp_servers:`));
 		console.log(chalk.gray(clawdiChild));
 	}
@@ -276,7 +291,7 @@ function registerCodexMcp() {
 
 	try {
 		const list = execSync("codex mcp list", { encoding: "utf-8", stdio: "pipe" });
-		if (/^\s*clawdi\b/m.test(list) || list.includes("clawdi ")) {
+		if (/^\s*clawdi\b/m.test(list)) {
 			console.log(chalk.gray("✓ MCP server already registered in Codex"));
 			return;
 		}
