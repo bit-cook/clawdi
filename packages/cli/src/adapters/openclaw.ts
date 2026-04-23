@@ -1,7 +1,7 @@
 import { existsSync, readdirSync, readFileSync, mkdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
-import * as tar from "tar";
 import type { AgentAdapter, RawSession, RawSkill, SessionMessage } from "./base";
+import { extractTarGz } from "../lib/tar";
 import { SKIP_DIRS, getOpenClawHome } from "./paths";
 
 function openclawDir() {
@@ -254,13 +254,7 @@ export class OpenClawAdapter implements AgentAdapter {
 		}
 		mkdirSync(targetDir, { recursive: true });
 
-		await tar
-			.extract({
-				cwd: skillsDir(),
-				gzip: true,
-				filter: (path) => !path.includes("..") && !path.startsWith("/"),
-			})
-			.end(tarGzBytes);
+		await extractTarGz(skillsDir(), tarGzBytes);
 	}
 
 	buildRunCommand(args: string[], _env: Record<string, string>): string[] {

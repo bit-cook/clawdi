@@ -1,8 +1,8 @@
 import { existsSync, readdirSync, readFileSync, mkdirSync, rmSync } from "node:fs";
 import { join, relative } from "node:path";
 import { Database } from "bun:sqlite";
-import * as tar from "tar";
 import type { AgentAdapter, RawSession, RawSkill, SessionMessage } from "./base";
+import { extractTarGz } from "../lib/tar";
 import { SKIP_DIRS, getHermesHome } from "./paths";
 
 function hermesDir() {
@@ -180,11 +180,7 @@ export class HermesAdapter implements AgentAdapter {
 		}
 		mkdirSync(targetDir, { recursive: true });
 
-		await tar.extract({
-			cwd: skillsDir(),
-			gzip: true,
-			filter: (path) => !path.includes("..") && !path.startsWith("/"),
-		}).end(tarGzBytes);
+		await extractTarGz(skillsDir(), tarGzBytes);
 	}
 
 	buildRunCommand(args: string[], _env: Record<string, string>): string[] {

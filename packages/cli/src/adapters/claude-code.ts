@@ -1,7 +1,7 @@
 import { existsSync, readdirSync, readFileSync, mkdirSync, rmSync } from "node:fs";
 import { join, basename } from "node:path";
-import * as tar from "tar";
 import type { AgentAdapter, RawSession, RawSkill, SessionMessage } from "./base";
+import { extractTarGz } from "../lib/tar";
 import { SKIP_DIRS, getClaudeHome } from "./paths";
 
 function claudeDir() {
@@ -244,14 +244,7 @@ export class ClaudeCodeAdapter implements AgentAdapter {
 		}
 		mkdirSync(targetDir, { recursive: true });
 
-		await tar.extract({
-			cwd: skillsDir,
-			gzip: true,
-			filter: (path) => {
-				// Reject path traversal
-				return !path.includes("..") && !path.startsWith("/");
-			},
-		}).end(tarGzBytes);
+		await extractTarGz(skillsDir, tarGzBytes);
 	}
 
 	buildRunCommand(args: string[], _env: Record<string, string>): string[] {
