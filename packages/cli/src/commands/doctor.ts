@@ -155,8 +155,11 @@ export async function doctor(opts: { json?: boolean } = {}) {
 	checks.push(await checkVault());
 	checks.push(await checkMcp());
 
+	const failed = checks.filter((c) => !c.ok).length;
+
 	if (opts.json || !process.stdout.isTTY) {
 		console.log(JSON.stringify(checks, null, 2));
+		if (failed > 0) process.exitCode = 1;
 		return;
 	}
 
@@ -173,7 +176,6 @@ export async function doctor(opts: { json?: boolean } = {}) {
 	}
 	console.log();
 
-	const failed = checks.filter((c) => !c.ok).length;
 	if (failed === 0) {
 		console.log(chalk.green("All checks passed."));
 	} else {
