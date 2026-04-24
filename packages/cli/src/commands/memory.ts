@@ -17,7 +17,12 @@ function requireAuth() {
 	}
 }
 
-function buildQuery(opts: { limit?: string; category?: string; since?: string; q?: string }): string {
+function buildQuery(opts: {
+	limit?: string;
+	category?: string;
+	since?: string;
+	q?: string;
+}): string {
 	const params = new URLSearchParams();
 	if (opts.q) params.set("q", opts.q);
 	if (opts.limit) params.set("limit", opts.limit);
@@ -61,7 +66,9 @@ export async function memoryList(
 	}
 
 	printRows(memories, false);
-	console.log(chalk.gray(`\n  ${memories.length} memor${memories.length === 1 ? "y" : "ies"} total`));
+	console.log(
+		chalk.gray(`\n  ${memories.length} memor${memories.length === 1 ? "y" : "ies"} total`),
+	);
 }
 
 export async function memorySearch(
@@ -70,9 +77,7 @@ export async function memorySearch(
 ) {
 	requireAuth();
 	const api = new ApiClient();
-	const memories = await api.get<MemoryRow[]>(
-		`/api/memories${buildQuery({ ...opts, q: query })}`,
-	);
+	const memories = await api.get<MemoryRow[]>(`/api/memories${buildQuery({ ...opts, q: query })}`);
 
 	if (opts.json || !process.stdout.isTTY) {
 		console.log(JSON.stringify(memories, null, 2));

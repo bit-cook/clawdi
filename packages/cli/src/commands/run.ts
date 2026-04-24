@@ -1,5 +1,5 @@
-import chalk from "chalk";
 import { spawn } from "node:child_process";
+import chalk from "chalk";
 import { ApiClient, ApiError } from "../lib/api-client";
 import { isLoggedIn } from "../lib/config";
 

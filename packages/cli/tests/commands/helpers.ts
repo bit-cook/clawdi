@@ -27,7 +27,8 @@ export function mockFetch(
 	const captured: CapturedRequest[] = [];
 
 	globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
-		const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+		const url =
+			typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
 		const method = (init?.method ?? "GET").toUpperCase();
 		const path = url.replace(/^https?:\/\/[^/]+/, "");
 		const contentType = (init?.headers as Record<string, string> | undefined)?.["Content-Type"];
@@ -46,10 +47,7 @@ export function mockFetch(
 
 		for (const h of handlers) {
 			if (h.method && h.method.toUpperCase() !== method) continue;
-			const m =
-				typeof h.path === "string"
-					? path.startsWith(h.path)
-					: h.path.test(path);
+			const m = typeof h.path === "string" ? path.startsWith(h.path) : h.path.test(path);
 			if (m) return await h.response();
 		}
 		return new Response(`unhandled ${method} ${path}`, { status: 404 });

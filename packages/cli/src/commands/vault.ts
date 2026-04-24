@@ -1,6 +1,6 @@
+import { readFileSync } from "node:fs";
 import * as p from "@clack/prompts";
 import chalk from "chalk";
-import { readFileSync } from "node:fs";
 import { ApiClient } from "../lib/api-client";
 import { isLoggedIn } from "../lib/config";
 import { sanitizeMetadata } from "../lib/sanitize";

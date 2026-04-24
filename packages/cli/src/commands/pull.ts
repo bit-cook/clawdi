@@ -1,12 +1,12 @@
-import * as p from "@clack/prompts";
-import chalk from "chalk";
 import { existsSync } from "node:fs";
 import { dirname } from "node:path";
+import * as p from "@clack/prompts";
 import { AGENT_LABELS } from "@clawdi-cloud/shared/consts";
+import chalk from "chalk";
 import { ApiClient } from "../lib/api-client";
 import { isLoggedIn } from "../lib/config";
-import { sanitizeMetadata } from "../lib/sanitize";
 import { askMulti, askYesNo, parseModules } from "../lib/prompts";
+import { sanitizeMetadata } from "../lib/sanitize";
 import { selectAdapter } from "../lib/select-adapter";
 
 const DOWN_MODULES = [
@@ -70,9 +70,7 @@ export async function pull(opts: { modules?: string; dryRun?: boolean; agent?: s
 			(s) => !existsSync(adapter.getSkillPath(s.skill_key)),
 		).length;
 		const existingCount = cloudSkills.length - newCount;
-		p.log.message(
-			chalk.gray(`${newCount} new, ${existingCount} existing`),
-		);
+		p.log.message(chalk.gray(`${newCount} new, ${existingCount} existing`));
 	}
 
 	if (cloudSkills.length === 0) {

@@ -7,13 +7,7 @@ import { join } from "node:path";
  * `collectSkills()`. Lives here (not in registry.ts) to avoid a cycle, since
  * registry.ts already imports every adapter.
  */
-export const SKIP_DIRS = new Set([
-	"node_modules",
-	".git",
-	"dist",
-	"build",
-	"__pycache__",
-]);
+export const SKIP_DIRS = new Set(["node_modules", ".git", "dist", "build", "__pycache__"]);
 
 // All getters compute lazily. Module-level constants would freeze the path at
 // import time and ignore env changes (and break per-test HOME overrides).

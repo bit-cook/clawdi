@@ -284,10 +284,7 @@ skillCmd
 skillCmd
 	.command("init [name]")
 	.description("Scaffold a new SKILL.md template in the current or named directory")
-	.addHelpText(
-		"after",
-		"\nExamples:\n  $ clawdi skill init\n  $ clawdi skill init my-skill",
-	)
+	.addHelpText("after", "\nExamples:\n  $ clawdi skill init\n  $ clawdi skill init my-skill")
 	.action(async (name) => {
 		const { skillInit } = await import("./commands/skill.js");
 		skillInit(name);
@@ -319,7 +316,7 @@ memoryCmd
 	.option("--since <date>", "Only memories after this date")
 	.addHelpText(
 		"after",
-		"\nExamples:\n  $ clawdi memory search redis\n  $ clawdi memory search \"typing styles\" --limit 5",
+		'\nExamples:\n  $ clawdi memory search redis\n  $ clawdi memory search "typing styles" --limit 5',
 	)
 	.action(async (query, opts) => {
 		const { memorySearch } = await import("./commands/memory.js");

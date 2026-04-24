@@ -1,8 +1,16 @@
-import { existsSync, readdirSync, readFileSync, mkdirSync, rmSync, statSync, type Dirent } from "node:fs";
+import {
+	type Dirent,
+	existsSync,
+	mkdirSync,
+	readdirSync,
+	readFileSync,
+	rmSync,
+	statSync,
+} from "node:fs";
 import { join } from "node:path";
-import type { AgentAdapter, RawSession, RawSkill, SessionMessage } from "./base";
 import { extractTarGz } from "../lib/tar";
-import { SKIP_DIRS, getCodexHome } from "./paths";
+import type { AgentAdapter, RawSession, RawSkill, SessionMessage } from "./base";
+import { getCodexHome, SKIP_DIRS } from "./paths";
 
 function codexDir() {
 	return getCodexHome();
@@ -188,7 +196,7 @@ export class CodexAdapter implements AgentAdapter {
 					messages.push({
 						role,
 						content: text,
-						model: role === "assistant" ? lastModel ?? undefined : undefined,
+						model: role === "assistant" ? (lastModel ?? undefined) : undefined,
 						timestamp: ts?.toISOString(),
 					});
 				}
@@ -204,9 +212,7 @@ export class CodexAdapter implements AgentAdapter {
 			}
 
 			if (!endedAt) endedAt = startedAt;
-			const durationSeconds = Math.floor(
-				(endedAt.getTime() - startedAt.getTime()) / 1000,
-			);
+			const durationSeconds = Math.floor((endedAt.getTime() - startedAt.getTime()) / 1000);
 
 			const firstRealUser = messages.find(
 				(m) => m.role === "user" && !m.content.startsWith("<environment_context>"),

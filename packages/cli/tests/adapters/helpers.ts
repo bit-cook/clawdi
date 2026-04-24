@@ -14,7 +14,10 @@ const fixturesRoot = join(here, "..", "fixtures");
  */
 export function copyFixtureToTmp(agent: "claude-code" | "codex" | "hermes" | "openclaw"): string {
 	const src = join(fixturesRoot, agent);
-	const dst = join(tmpdir(), `clawdi-fixture-${agent}-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+	const dst = join(
+		tmpdir(),
+		`clawdi-fixture-${agent}-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+	);
 	mkdirSync(dst, { recursive: true });
 	cpSync(src, dst, { recursive: true });
 	return dst;

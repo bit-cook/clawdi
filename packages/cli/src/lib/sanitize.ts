@@ -26,8 +26,8 @@ const DCS_PM_APC_RE = /\x1b[P^_][\s\S]*?(?:\x1b\\)/g;
 const SIMPLE_ESC_RE = /\x1b[\x20-\x7e]/g;
 // biome-ignore lint/suspicious/noControlCharactersInRegex: intentionally matching control chars
 const C1_RE = /[\x80-\x9f]/g;
-// biome-ignore lint/suspicious/noControlCharactersInRegex: intentionally matching control chars
 // Strips all C0 control chars except \t (0x09) and \n (0x0a). Matches Vercel skills/src/sanitize.ts.
+// biome-ignore lint/suspicious/noControlCharactersInRegex: intentionally matching control chars
 const CONTROL_RE = /[\x00-\x08\x0b\x0c\x0d-\x1a\x1c-\x1f\x7f]/g;
 
 /** Strip terminal escape sequences and dangerous control chars. */
@@ -69,10 +69,7 @@ export function sanitizeSubpath(subpath: string): string {
 export function isSubpathSafe(basePath: string, subpath: string): boolean {
 	const normalizedBase = normalize(resolve(basePath));
 	const normalizedTarget = normalize(resolve(basePath, subpath));
-	return (
-		normalizedTarget === normalizedBase ||
-		normalizedTarget.startsWith(normalizedBase + sep)
-	);
+	return normalizedTarget === normalizedBase || normalizedTarget.startsWith(normalizedBase + sep);
 }
 
 /**
@@ -85,6 +82,6 @@ export function sanitizeName(name: string): string {
 	const sanitized = name
 		.toLowerCase()
 		.replace(/[^a-z0-9._]+/g, "-")
-		.replace(/^[.\-]+|[.\-]+$/g, "");
+		.replace(/^[.-]+|[.-]+$/g, "");
 	return sanitized.substring(0, 255) || "unnamed-skill";
 }

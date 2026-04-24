@@ -66,9 +66,7 @@ describe("auth persistence", () => {
 
 describe("config keys", () => {
 	it("setConfigKey / unsetConfigKey round-trip", async () => {
-		const { getStoredConfig, setConfigKey, unsetConfigKey } = await import(
-			"../src/lib/config"
-		);
+		const { getStoredConfig, setConfigKey, unsetConfigKey } = await import("../src/lib/config");
 		setConfigKey("apiUrl", "http://x");
 		expect(getStoredConfig().apiUrl).toBe("http://x");
 		unsetConfigKey("apiUrl");

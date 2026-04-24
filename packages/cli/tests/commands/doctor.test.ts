@@ -66,9 +66,21 @@ describe("doctor --json", () => {
 		};
 
 		const { restore } = mockFetch([
-			{ method: "GET", path: "/api/auth/me", response: () => jsonResponse({ id: "u1", email: "e" }) },
-			{ method: "POST", path: "/api/vault/resolve", response: () => jsonResponse({ K1: "v1", K2: "v2" }) },
-			{ method: "GET", path: "/api/connectors/mcp-config", response: () => jsonResponse({ ok: true }) },
+			{
+				method: "GET",
+				path: "/api/auth/me",
+				response: () => jsonResponse({ id: "u1", email: "e" }),
+			},
+			{
+				method: "POST",
+				path: "/api/vault/resolve",
+				response: () => jsonResponse({ K1: "v1", K2: "v2" }),
+			},
+			{
+				method: "GET",
+				path: "/api/connectors/mcp-config",
+				response: () => jsonResponse({ ok: true }),
+			},
 		]);
 		try {
 			await doctor({ json: true });
@@ -100,9 +112,21 @@ describe("doctor --json", () => {
 		};
 
 		const { restore } = mockFetch([
-			{ method: "GET", path: "/api/auth/me", response: () => new Response("nope", { status: 503 }) },
-			{ method: "POST", path: "/api/vault/resolve", response: () => new Response("", { status: 503 }) },
-			{ method: "GET", path: "/api/connectors/mcp-config", response: () => new Response("", { status: 503 }) },
+			{
+				method: "GET",
+				path: "/api/auth/me",
+				response: () => new Response("nope", { status: 503 }),
+			},
+			{
+				method: "POST",
+				path: "/api/vault/resolve",
+				response: () => new Response("", { status: 503 }),
+			},
+			{
+				method: "GET",
+				path: "/api/connectors/mcp-config",
+				response: () => new Response("", { status: 503 }),
+			},
 		]);
 		try {
 			await doctor({ json: true });

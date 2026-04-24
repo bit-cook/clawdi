@@ -1,7 +1,7 @@
-import chalk from "chalk";
 import { existsSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { AGENT_LABELS } from "@clawdi-cloud/shared/consts";
+import chalk from "chalk";
 import type { AgentAdapter } from "../adapters/base";
 import { ClaudeCodeAdapter } from "../adapters/claude-code";
 import { CodexAdapter } from "../adapters/codex";

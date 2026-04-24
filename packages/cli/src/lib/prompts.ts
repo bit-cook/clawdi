@@ -66,7 +66,10 @@ export function parseModules(
 	available: Array<{ value: string }>,
 ): string[] | null {
 	if (!input) return available.map((o) => o.value);
-	const chosen = input.split(",").map((s) => s.trim()).filter(Boolean);
+	const chosen = input
+		.split(",")
+		.map((s) => s.trim())
+		.filter(Boolean);
 	const valid = new Set(available.map((o) => o.value));
 	const invalid = chosen.filter((c) => !valid.has(c));
 	if (invalid.length > 0) {

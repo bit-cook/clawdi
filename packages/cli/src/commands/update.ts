@@ -1,6 +1,6 @@
-import chalk from "chalk";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import chalk from "chalk";
 import { getClawdiDir } from "../lib/config";
 import { getCliVersion } from "../lib/version";
 
@@ -129,9 +129,11 @@ export async function maybeNotifyOutdated(): Promise<void> {
 	}
 
 	// Cache stale — refresh in the background; don't block caller.
-	fetchLatest().then((latest) => {
-		if (latest) writeCache(latest);
-	}).catch(() => {
-		// best-effort
-	});
+	fetchLatest()
+		.then((latest) => {
+			if (latest) writeCache(latest);
+		})
+		.catch(() => {
+			// best-effort
+		});
 }

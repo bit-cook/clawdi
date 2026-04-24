@@ -47,7 +47,10 @@ export function parseSource(input: string): ParsedSource {
 		try {
 			const url = new URL(trimmed);
 			const host = url.hostname;
-			const parts = url.pathname.replace(/^\//, "").replace(/\.git$/, "").split("/");
+			const parts = url.pathname
+				.replace(/^\//, "")
+				.replace(/\.git$/, "")
+				.split("/");
 			if (parts.length >= 2) {
 				// Handle GitHub's /tree/<ref>/subpath convention.
 				let ref: string | undefined;

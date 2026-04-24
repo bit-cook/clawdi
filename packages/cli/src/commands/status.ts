@@ -1,5 +1,5 @@
-import chalk from "chalk";
 import type { ModuleState } from "@clawdi-cloud/shared/types";
+import chalk from "chalk";
 import { getAuth, getConfig, isLoggedIn } from "../lib/config";
 import { readModuleState } from "../lib/state";
 

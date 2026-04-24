@@ -120,12 +120,8 @@ describe("teardown — flag behavior", () => {
 
 		await teardown({ all: true, yes: true, keepMcp: true });
 
-		expect(
-			existsSync(join(tmpHome, ".clawdi", "environments", "hermes.json")),
-		).toBe(false);
-		expect(
-			existsSync(join(tmpHome, ".clawdi", "environments", "claude_code.json")),
-		).toBe(false);
+		expect(existsSync(join(tmpHome, ".clawdi", "environments", "hermes.json"))).toBe(false);
+		expect(existsSync(join(tmpHome, ".clawdi", "environments", "claude_code.json"))).toBe(false);
 	});
 });
 
@@ -214,10 +210,7 @@ describe("teardown — Hermes config.yaml MCP removal", () => {
 	it("logs gracefully when clawdi entry is absent", async () => {
 		setup("hermes");
 		const configPath = join(tmpHome, ".hermes", "config.yaml");
-		writeFileSync(
-			configPath,
-			["mcp_servers:", "  other:", '    command: "x"', ""].join("\n"),
-		);
+		writeFileSync(configPath, ["mcp_servers:", "  other:", '    command: "x"', ""].join("\n"));
 
 		await teardown({ agent: "hermes", yes: true });
 

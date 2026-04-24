@@ -283,60 +283,70 @@ function generateHermes() {
 	const t = 1776247200;
 
 	// A plain-string model session.
-	db.run(
-		`INSERT INTO sessions VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		[
-			"s-plain",
-			"telegram",
-			"claude-opus-4-7",
-			"First chat",
-			t,
-			t + 5,
-			2,
-			10,
-			5,
-			2,
-		],
-	);
-	db.run(
-		`INSERT INTO messages(session_id, role, content, timestamp) VALUES (?, ?, ?, ?)`,
-		["s-plain", "user", "hello", t],
-	);
-	db.run(
-		`INSERT INTO messages(session_id, role, content, timestamp) VALUES (?, ?, ?, ?)`,
-		["s-plain", "assistant", "world", t + 2],
-	);
+	db.run(`INSERT INTO sessions VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, [
+		"s-plain",
+		"telegram",
+		"claude-opus-4-7",
+		"First chat",
+		t,
+		t + 5,
+		2,
+		10,
+		5,
+		2,
+	]);
+	db.run(`INSERT INTO messages(session_id, role, content, timestamp) VALUES (?, ?, ?, ?)`, [
+		"s-plain",
+		"user",
+		"hello",
+		t,
+	]);
+	db.run(`INSERT INTO messages(session_id, role, content, timestamp) VALUES (?, ?, ?, ?)`, [
+		"s-plain",
+		"assistant",
+		"world",
+		t + 2,
+	]);
 
 	// A JSON-blob model session (parseModelField path).
-	db.run(
-		`INSERT INTO sessions VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		[
-			"s-json",
-			"telegram",
-			'{"default":"gpt-5.3-codex","provider":"openai-codex"}',
-			"New Chat",
-			t + 10,
-			t + 20,
-			2,
-			8,
-			4,
-			0,
-		],
-	);
-	db.run(
-		`INSERT INTO messages(session_id, role, content, timestamp) VALUES (?, ?, ?, ?)`,
-		["s-json", "user", "hi again", t + 10],
-	);
-	db.run(
-		`INSERT INTO messages(session_id, role, content, timestamp) VALUES (?, ?, ?, ?)`,
-		["s-json", "assistant", "howdy", t + 15],
-	);
+	db.run(`INSERT INTO sessions VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, [
+		"s-json",
+		"telegram",
+		'{"default":"gpt-5.3-codex","provider":"openai-codex"}',
+		"New Chat",
+		t + 10,
+		t + 20,
+		2,
+		8,
+		4,
+		0,
+	]);
+	db.run(`INSERT INTO messages(session_id, role, content, timestamp) VALUES (?, ?, ?, ?)`, [
+		"s-json",
+		"user",
+		"hi again",
+		t + 10,
+	]);
+	db.run(`INSERT INTO messages(session_id, role, content, timestamp) VALUES (?, ?, ?, ?)`, [
+		"s-json",
+		"assistant",
+		"howdy",
+		t + 15,
+	]);
 
 	// A session with no messages (adapter must skip it).
-	db.run(
-		`INSERT INTO sessions VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		["s-empty", "telegram", "claude-opus-4-7", "Empty", t + 100, null, 0, 0, 0, 0],
-	);
+	db.run(`INSERT INTO sessions VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, [
+		"s-empty",
+		"telegram",
+		"claude-opus-4-7",
+		"Empty",
+		t + 100,
+		null,
+		0,
+		0,
+		0,
+		0,
+	]);
 
 	db.close();
 

@@ -1,9 +1,9 @@
-import * as p from "@clack/prompts";
-import chalk from "chalk";
 import { execSync } from "node:child_process";
 import { existsSync, readFileSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import * as p from "@clack/prompts";
 import { AGENT_LABELS, AGENT_TYPES, type AgentType } from "@clawdi-cloud/shared/consts";
+import chalk from "chalk";
 import { getHermesHome } from "../adapters/paths";
 import { adapterRegistry, builtinSkillTargetDir } from "../adapters/registry";
 import { getClawdiDir } from "../lib/config";
@@ -106,10 +106,7 @@ async function resolveTargets(opts: {
 	return picked;
 }
 
-async function teardownOne(
-	agentType: AgentType,
-	opts: { keepSkill: boolean; keepMcp: boolean },
-) {
+async function teardownOne(agentType: AgentType, opts: { keepSkill: boolean; keepMcp: boolean }) {
 	const label = AGENT_LABELS[agentType];
 
 	// 1. Local env file
@@ -148,15 +145,14 @@ async function teardownOne(
 }
 
 async function unregisterMcpServer(agentType: AgentType) {
-	if (agentType === "claude_code") return unregisterViaCli("Claude Code", "claude mcp remove clawdi");
+	if (agentType === "claude_code")
+		return unregisterViaCli("Claude Code", "claude mcp remove clawdi");
 	if (agentType === "codex") return unregisterViaCli("Codex", "codex mcp remove clawdi");
 	if (agentType === "hermes") return unregisterHermesMcp();
 	if (agentType === "openclaw") {
 		// Symmetric with setup: OpenClaw has no native MCP registration point,
 		// so there's nothing to unregister here.
-		p.log.info(
-			"OpenClaw: no native MCP registration to remove (handled by the wrapped agent).",
-		);
+		p.log.info("OpenClaw: no native MCP registration to remove (handled by the wrapped agent).");
 	}
 }
 

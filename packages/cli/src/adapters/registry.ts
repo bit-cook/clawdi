@@ -5,12 +5,7 @@ import { ClaudeCodeAdapter } from "./claude-code";
 import { CodexAdapter } from "./codex";
 import { HermesAdapter } from "./hermes";
 import { OpenClawAdapter } from "./openclaw";
-import {
-	getClaudeHome,
-	getCodexHome,
-	getHermesHome,
-	getOpenClawHome,
-} from "./paths";
+import { getClaudeHome, getCodexHome, getHermesHome, getOpenClawHome } from "./paths";
 
 // Re-exported here for callers that think of SKIP_DIRS as a registry concern.
 // Defined in paths.ts to avoid a circular import (registry imports adapters).
@@ -78,11 +73,7 @@ export function builtinSkillTargetDir(agentType: AgentType): string | null {
 		const openclawAgentId = process.env.OPENCLAW_AGENT_ID || "main";
 		return join(home, "agents", openclawAgentId, "skills", "clawdi");
 	}
-	if (
-		agentType === "claude_code" ||
-		agentType === "codex" ||
-		agentType === "hermes"
-	) {
+	if (agentType === "claude_code" || agentType === "codex" || agentType === "hermes") {
 		return join(home, "skills", "clawdi");
 	}
 	return null;

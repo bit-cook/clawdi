@@ -48,7 +48,11 @@ describe("update --json", () => {
 			restore();
 		}
 
-		const result = JSON.parse(captured) as { current: string; latest: string; upgradeAvailable: boolean };
+		const result = JSON.parse(captured) as {
+			current: string;
+			latest: string;
+			upgradeAvailable: boolean;
+		};
 		expect(result.latest).toBe("99.0.0");
 		expect(result.upgradeAvailable).toBe(true);
 	});

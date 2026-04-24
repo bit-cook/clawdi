@@ -1,14 +1,14 @@
+import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { basename, dirname, join, resolve } from "node:path";
 import * as p from "@clack/prompts";
 import chalk from "chalk";
-import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
-import { basename, dirname, join, resolve } from "node:path";
 import type { AgentAdapter } from "../adapters/base";
 import { adapterRegistry } from "../adapters/registry";
 import { ApiClient, ApiError } from "../lib/api-client";
 import { getClawdiDir, isLoggedIn } from "../lib/config";
 import { parseFrontmatter } from "../lib/frontmatter";
 import { sanitizeMetadata, sanitizeName } from "../lib/sanitize";
-import { parseSource } from "../lib/source-parser";
+import { type ParsedSource, parseSource } from "../lib/source-parser";
 import { tarSingleFile, tarSkillDir } from "../lib/tar";
 import { isInteractive } from "../lib/tty";
 
@@ -110,9 +110,7 @@ export async function skillAdd(path: string, opts: { yes?: boolean } = {}) {
 	// uploading skills that agents can't meaningfully surface.
 	const { data } = parseFrontmatter(skillMdSource);
 	if (!data.name || !data.description) {
-		console.log(
-			chalk.red("SKILL.md must declare both `name` and `description` in frontmatter."),
-		);
+		console.log(chalk.red("SKILL.md must declare both `name` and `description` in frontmatter."));
 		console.log(
 			chalk.gray("  Example:\n    ---\n    name: my-skill\n    description: what it does\n    ---"),
 		);
@@ -157,7 +155,7 @@ export async function skillInstall(
 ) {
 	requireAuth();
 
-	let parsed;
+	let parsed: ParsedSource;
 	try {
 		parsed = parseSource(repoInput);
 	} catch (e) {
@@ -167,9 +165,7 @@ export async function skillInstall(
 
 	if (parsed.type !== "github") {
 		console.log(
-			chalk.red(
-				`Only GitHub sources are supported by the backend for now (got ${parsed.type}).`,
-			),
+			chalk.red(`Only GitHub sources are supported by the backend for now (got ${parsed.type}).`),
 		);
 		process.exit(1);
 	}
@@ -235,9 +231,7 @@ export async function skillInstall(
 			tarBytes = await api.getBytes(`/api/skills/${installResult.skill_key}/download`);
 		} catch (e) {
 			console.log(
-				chalk.red(
-					`✗ Download failed: ${e instanceof ApiError ? e.message : (e as Error).message}`,
-				),
+				chalk.red(`✗ Download failed: ${e instanceof ApiError ? e.message : (e as Error).message}`),
 			);
 			console.log(
 				chalk.gray(
@@ -252,11 +246,7 @@ export async function skillInstall(
 			try {
 				await adapter.writeSkillArchive(installResult.skill_key, tarBytes);
 				const skillDir = dirname(adapter.getSkillPath(installResult.skill_key));
-				console.log(
-					chalk.green(
-						`  ✓ ${label} → ${skillDir}/ (${installResult.file_count} files)`,
-					),
-				);
+				console.log(chalk.green(`  ✓ ${label} → ${skillDir}/ (${installResult.file_count} files)`));
 			} catch (e) {
 				failed.push({ agent: adapter.agentType, error: (e as Error).message });
 				console.log(chalk.red(`  ✗ ${label} failed: ${(e as Error).message}`));
@@ -284,11 +274,7 @@ export async function skillInstall(
 				),
 			);
 		}
-		console.log(
-			chalk.gray(
-				`  Retry those with: clawdi pull --agent <type>`,
-			),
-		);
+		console.log(chalk.gray(`  Retry those with: clawdi pull --agent <type>`));
 		// If ALL targeted adapters failed, exit non-zero so scripts notice.
 		if (adapters.length > 0 && failed.length === adapters.length) {
 			process.exit(1);

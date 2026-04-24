@@ -1,9 +1,9 @@
-import { existsSync, readdirSync, readFileSync, mkdirSync, rmSync } from "node:fs";
-import { join, relative } from "node:path";
 import { Database } from "bun:sqlite";
-import type { AgentAdapter, RawSession, RawSkill, SessionMessage } from "./base";
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync } from "node:fs";
+import { join, relative } from "node:path";
 import { extractTarGz } from "../lib/tar";
-import { SKIP_DIRS, getHermesHome } from "./paths";
+import type { AgentAdapter, RawSession, RawSkill, SessionMessage } from "./base";
+import { getHermesHome, SKIP_DIRS } from "./paths";
 
 function hermesDir() {
 	return getHermesHome();
@@ -58,13 +58,15 @@ export class HermesAdapter implements AgentAdapter {
 		try {
 			const sinceEpoch = since ? since.getTime() / 1000 : 0;
 
-			const rows = db.query(`
+			const rows = db
+				.query(`
 					SELECT id, source, model, title, started_at, ended_at,
 					       message_count, input_tokens, output_tokens, cache_read_tokens
 					FROM sessions
 					WHERE started_at >= ?
 					ORDER BY started_at DESC
-				`).all(sinceEpoch) as any[];
+				`)
+				.all(sinceEpoch) as any[];
 
 			const msgStmt = db.query(`
 				SELECT role, content, timestamp
@@ -87,7 +89,7 @@ export class HermesAdapter implements AgentAdapter {
 				const messages: SessionMessage[] = msgRows.map((m) => ({
 					role: m.role as "user" | "assistant",
 					content: m.content,
-					model: m.role === "assistant" ? model ?? undefined : undefined,
+					model: m.role === "assistant" ? (model ?? undefined) : undefined,
 					timestamp: new Date(m.timestamp * 1000).toISOString(),
 				}));
 

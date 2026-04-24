@@ -89,13 +89,7 @@ describe("ClaudeCodeAdapter.collectSessions", () => {
 	});
 
 	it("skips sessions with fewer than 3 JSONL lines", async () => {
-		const shortPath = join(
-			tmpHome,
-			".claude",
-			"projects",
-			"-Users-fixture-project",
-			"short.jsonl",
-		);
+		const shortPath = join(tmpHome, ".claude", "projects", "-Users-fixture-project", "short.jsonl");
 		writeFileSync(shortPath, JSON.stringify({ timestamp: "2026-04-20T10:00:00Z" }) + "\n");
 		const a = new ClaudeCodeAdapter();
 		const sessions = await a.collectSessions();

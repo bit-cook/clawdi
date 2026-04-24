@@ -1,7 +1,7 @@
-import chalk from "chalk";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { ModuleState } from "@clawdi-cloud/shared/types";
+import chalk from "chalk";
 import { getClawdiDir } from "./config";
 
 const STATE_FILE = "state.json";

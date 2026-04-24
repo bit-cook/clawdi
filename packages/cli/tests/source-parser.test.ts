@@ -14,7 +14,12 @@ describe("parseSource", () => {
 
 	it("parses owner/repo/subpath", () => {
 		const s = parseSource("owner/repo/path/to/skill");
-		expect(s).toMatchObject({ type: "github", owner: "owner", repo: "repo", path: "path/to/skill" });
+		expect(s).toMatchObject({
+			type: "github",
+			owner: "owner",
+			repo: "repo",
+			path: "path/to/skill",
+		});
 	});
 
 	it("parses owner/repo#ref", () => {

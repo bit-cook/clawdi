@@ -1,6 +1,6 @@
 import * as p from "@clack/prompts";
-import chalk from "chalk";
 import { AGENT_LABELS } from "@clawdi-cloud/shared/consts";
+import chalk from "chalk";
 import type { RawSession, RawSkill } from "../adapters/base";
 import { ApiClient } from "../lib/api-client";
 import { isLoggedIn } from "../lib/config";
@@ -130,7 +130,9 @@ export async function push(opts: {
 
 	if (sessions.length > 0) {
 		const sessionSpinner = p.spinner();
-		sessionSpinner.start(`Uploading ${sessions.length} session${sessions.length === 1 ? "" : "s"}...`);
+		sessionSpinner.start(
+			`Uploading ${sessions.length} session${sessions.length === 1 ? "" : "s"}...`,
+		);
 		try {
 			const result = await api.post<{ synced: number }>("/api/sessions/batch", {
 				sessions: sessions.map((s) => ({
@@ -150,9 +152,7 @@ export async function push(opts: {
 					status: "completed",
 				})),
 			});
-			sessionSpinner.stop(
-				`Pushed ${result.synced} session${result.synced === 1 ? "" : "s"}`,
-			);
+			sessionSpinner.stop(`Pushed ${result.synced} session${result.synced === 1 ? "" : "s"}`);
 
 			if (result.synced > 0) {
 				const contentSpinner = p.spinner();
@@ -174,9 +174,7 @@ export async function push(opts: {
 						// Session might already exist, skip
 					}
 				}
-				contentSpinner.stop(
-					`Uploaded ${uploaded} session content${uploaded === 1 ? "" : "s"}`,
-				);
+				contentSpinner.stop(`Uploaded ${uploaded} session content${uploaded === 1 ? "" : "s"}`);
 			}
 		} catch (e) {
 			// Stop the spinner with a plain "failed" message — handleError

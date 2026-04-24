@@ -112,22 +112,12 @@ describe("OpenClawAdapter.collectSkills", () => {
 
 describe("OpenClawAdapter.writeSkillArchive + getSkillPath", () => {
 	it("round-trips a tar.gz into the agent skills dir", async () => {
-		const bytes = await tarSkillDir(
-			join(tmpHome, ".openclaw", "agents", "main", "skills", "demo"),
-		);
+		const bytes = await tarSkillDir(join(tmpHome, ".openclaw", "agents", "main", "skills", "demo"));
 
 		const a = new OpenClawAdapter();
 		await a.writeSkillArchive("demo", bytes);
 
-		const extracted = join(
-			tmpHome,
-			".openclaw",
-			"agents",
-			"main",
-			"skills",
-			"demo",
-			"SKILL.md",
-		);
+		const extracted = join(tmpHome, ".openclaw", "agents", "main", "skills", "demo", "SKILL.md");
 		expect(existsSync(extracted)).toBe(true);
 		expect(readFileSync(extracted, "utf-8")).toContain("name: demo");
 	});

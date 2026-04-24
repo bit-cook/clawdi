@@ -18,7 +18,10 @@ let tmpHome: string;
 let origHome: string | undefined;
 let origExitCode: number | string | undefined;
 
-function setup(agent: AgentKey): { sent: ReturnType<typeof mockFetch>["captured"]; restore: () => void } {
+function setup(agent: AgentKey): {
+	sent: ReturnType<typeof mockFetch>["captured"];
+	restore: () => void;
+} {
 	origHome = process.env.HOME;
 	origExitCode = process.exitCode;
 	tmpHome = copyFixtureToTmp(agent);

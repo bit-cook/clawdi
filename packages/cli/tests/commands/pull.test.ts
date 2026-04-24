@@ -65,7 +65,11 @@ content
 				path: "/api/skills/demo/download",
 				response: () => new Response(new Uint8Array(tarBytes), { status: 200 }),
 			},
-			{ method: "GET", path: "/api/skills", response: () => jsonResponse([{ skill_key: "demo", name: "demo" }]) },
+			{
+				method: "GET",
+				path: "/api/skills",
+				response: () => jsonResponse([{ skill_key: "demo", name: "demo" }]),
+			},
 		]);
 
 		try {
@@ -87,7 +91,11 @@ content
 		setup("hermes");
 		const { captured, restore } = mockFetch([
 			{ method: "GET", path: "/api/skills/demo/download", response: () => jsonResponse({}) },
-			{ method: "GET", path: "/api/skills", response: () => jsonResponse([{ skill_key: "demo", name: "demo" }]) },
+			{
+				method: "GET",
+				path: "/api/skills",
+				response: () => jsonResponse([{ skill_key: "demo", name: "demo" }]),
+			},
 		]);
 		try {
 			await pull({ agent: "hermes", dryRun: true });
@@ -225,9 +233,7 @@ description: new
 			restore();
 		}
 		expect(
-			existsSync(
-				join(tmpHome, ".openclaw", "agents", "main", "skills", "fresh", "SKILL.md"),
-			),
+			existsSync(join(tmpHome, ".openclaw", "agents", "main", "skills", "fresh", "SKILL.md")),
 		).toBe(true);
 	});
 });

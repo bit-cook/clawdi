@@ -81,11 +81,7 @@ export class ApiClient {
 		}
 	}
 
-	private async requestOnce(
-		url: string,
-		init: RequestInit,
-		timeoutMs: number,
-	): Promise<Response> {
+	private async requestOnce(url: string, init: RequestInit, timeoutMs: number): Promise<Response> {
 		try {
 			return await this.fetchWithTimeout(url, init, timeoutMs);
 		} catch (e: unknown) {
@@ -94,9 +90,7 @@ export class ApiClient {
 			throw new ApiError({
 				status: 0,
 				body: err?.message ?? String(e),
-				hint: isTimeout
-					? "Request timed out; the service may be slow or unreachable."
-					: hintFor(0),
+				hint: isTimeout ? "Request timed out; the service may be slow or unreachable." : hintFor(0),
 				isNetwork: true,
 				isTimeout,
 			});
@@ -147,7 +141,9 @@ export class ApiClient {
 			throw new ApiError({ status: res.status, body, hint: hintFor(res.status) });
 		}
 
-		throw lastErr ?? new ApiError({ status: 0, body: "unknown", hint: hintFor(0), isNetwork: true });
+		throw (
+			lastErr ?? new ApiError({ status: 0, body: "unknown", hint: hintFor(0), isNetwork: true })
+		);
 	}
 
 	async request<T>(path: string, options: RequestOptions = {}): Promise<T> {

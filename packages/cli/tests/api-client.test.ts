@@ -12,7 +12,10 @@ let fakeHome: string;
 function fakeLogin(apiUrl: string) {
 	const dir = join(fakeHome, ".clawdi");
 	mkdirSync(dir, { recursive: true });
-	writeFileSync(join(dir, "auth.json"), JSON.stringify({ apiKey: "test-key", userId: "u1", email: "e" }));
+	writeFileSync(
+		join(dir, "auth.json"),
+		JSON.stringify({ apiKey: "test-key", userId: "u1", email: "e" }),
+	);
 	writeFileSync(join(dir, "config.json"), JSON.stringify({ apiUrl }));
 }
 
