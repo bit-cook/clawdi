@@ -4,10 +4,10 @@ import { AGENT_LABELS } from "@clawdi-cloud/shared/consts";
 import type { RawSession, RawSkill } from "../adapters/base";
 import { ApiClient } from "../lib/api-client";
 import { isLoggedIn } from "../lib/config";
+import { askMulti, askYesNo, parseModules } from "../lib/prompts";
+import { getEnvIdByAgent, selectAdapter } from "../lib/select-adapter";
+import { readModuleState, writeModuleState } from "../lib/state";
 import { tarSkillDir } from "../lib/tar";
-import { askMulti, askYesNo, parseModules } from "./sync/modules";
-import { getEnvIdByAgent, selectAdapter } from "./sync/select-adapter";
-import { getSyncState, saveSyncState } from "./sync/state";
 
 const UP_MODULES = [
 	{ value: "sessions", label: "Sessions", hint: "agent conversation history" },
@@ -61,7 +61,7 @@ export async function push(opts: {
 		modules = picked;
 	}
 	if (modules.length === 0) {
-		p.outro(chalk.gray("Nothing to sync."));
+		p.outro(chalk.gray("Nothing to push."));
 		return;
 	}
 
@@ -69,11 +69,11 @@ export async function push(opts: {
 	p.log.info(`Modules: ${modules.join(", ")}`);
 
 	// 2. Scan data
-	const syncState = getSyncState();
+	const moduleState = readModuleState();
 	const since = opts.since
 		? new Date(opts.since)
-		: syncState.sessions?.lastSyncedAt
-			? new Date(syncState.sessions.lastSyncedAt)
+		: moduleState.sessions?.lastActivityAt
+			? new Date(moduleState.sessions.lastActivityAt)
 			: undefined;
 	const projectFilter = opts.all ? undefined : (opts.project ?? process.cwd());
 
@@ -82,7 +82,7 @@ export async function push(opts: {
 		modules.includes("sessions") &&
 		projectFilter !== undefined
 	) {
-		p.log.warn("Hermes does not support project filtering; syncing all sessions.");
+		p.log.warn("Hermes does not support project filtering; pushing all sessions.");
 		p.log.info("Use --all to suppress this notice.");
 	}
 
@@ -110,7 +110,7 @@ export async function push(opts: {
 	}
 
 	if (sessions.length === 0 && skills.length === 0) {
-		p.outro(chalk.gray("Nothing to sync."));
+		p.outro(chalk.gray("Nothing to push."));
 		return;
 	}
 
@@ -151,7 +151,7 @@ export async function push(opts: {
 				})),
 			});
 			sessionSpinner.stop(
-				`Synced ${result.synced} session${result.synced === 1 ? "" : "s"}`,
+				`Pushed ${result.synced} session${result.synced === 1 ? "" : "s"}`,
 			);
 
 			if (result.synced > 0) {
@@ -184,13 +184,13 @@ export async function push(opts: {
 			sessionSpinner.stop("Session upload failed.");
 			throw e;
 		}
-		syncState.sessions = { lastSyncedAt: new Date().toISOString() };
+		moduleState.sessions = { lastActivityAt: new Date().toISOString() };
 	}
 
 	if (skills.length > 0) {
 		const skillSpinner = p.spinner();
 		skillSpinner.start(`Uploading ${skills.length} skill${skills.length === 1 ? "" : "s"}...`);
-		let synced = 0;
+		let pushed = 0;
 		try {
 			for (const skill of skills) {
 				const tarBytes = await tarSkillDir(skill.directoryPath);
@@ -200,17 +200,17 @@ export async function push(opts: {
 					tarBytes,
 					`${skill.skillKey}.tar.gz`,
 				);
-				synced++;
-				skillSpinner.message(`Uploading skills (${synced}/${skills.length})...`);
+				pushed++;
+				skillSpinner.message(`Uploading skills (${pushed}/${skills.length})...`);
 			}
-			skillSpinner.stop(`Synced ${synced} skill${synced === 1 ? "" : "s"}`);
+			skillSpinner.stop(`Pushed ${pushed} skill${pushed === 1 ? "" : "s"}`);
 		} catch (e) {
-			skillSpinner.stop(`Failed after ${synced} skill${synced === 1 ? "" : "s"}.`);
+			skillSpinner.stop(`Failed after ${pushed} skill${pushed === 1 ? "" : "s"}.`);
 			throw e;
 		}
-		syncState.skills = { lastSyncedAt: new Date().toISOString() };
+		moduleState.skills = { lastActivityAt: new Date().toISOString() };
 	}
 
-	saveSyncState(syncState);
-	p.outro(chalk.green("✓ Sync complete"));
+	writeModuleState(moduleState);
+	p.outro(chalk.green("✓ Push complete"));
 }

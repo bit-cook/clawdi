@@ -7,7 +7,7 @@ const program = new Command();
 
 program
 	.name("clawdi")
-	.description("iCloud for AI Agents — sync sessions, skills, vault across agents")
+	.description("iCloud for AI Agents — share sessions, skills, vault across agents")
 	.version(getCliVersion())
 	.addHelpText(
 		"after",
@@ -63,7 +63,7 @@ authCmd
 // ─────────────────────────────────────────────────────────────
 program
 	.command("status")
-	.description("Show current auth and sync status")
+	.description("Show current auth and module activity")
 	.option("--json", "Output as JSON")
 	.addHelpText("after", "\nExamples:\n  $ clawdi status\n  $ clawdi status --json")
 	.action(async (opts) => {
@@ -134,9 +134,9 @@ program
 	.command("push")
 	.description("Push local data (sessions, skills) to the cloud")
 	.option("--modules <modules>", "Comma-separated: sessions,skills")
-	.option("--since <date>", "Only sync data after this date")
-	.option("--project <path>", "Sync a specific project (default: current directory)")
-	.option("--all", "Sync all projects")
+	.option("--since <date>", "Only push data modified after this date")
+	.option("--project <path>", "Push a specific project's data (default: current directory)")
+	.option("--all", "Push data from all projects")
 	.option("--agent <type>", "Target agent (claude_code, codex, hermes, openclaw)")
 	.option("--dry-run", "Preview without uploading")
 	.addHelpText(
@@ -213,7 +213,7 @@ const skillCmd = program.command("skill").description("Manage skills");
 
 skillCmd
 	.command("list")
-	.description("List synced skills")
+	.description("List uploaded skills")
 	.option("--json", "Output as JSON")
 	.action(async (opts) => {
 		const { skillList } = await import("./commands/skill.js");

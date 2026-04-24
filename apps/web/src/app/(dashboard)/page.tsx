@@ -189,9 +189,9 @@ export default function DashboardPage() {
           <div className="rounded-lg border border-dashed p-6 text-center text-sm text-muted-foreground">
             No sessions yet. Run{" "}
             <code className="bg-muted px-1.5 py-0.5 rounded text-xs">
-              clawdi sync up
+              clawdi push
             </code>{" "}
-            to sync.
+            to upload.
           </div>
         )}
       </div>

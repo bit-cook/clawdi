@@ -66,9 +66,9 @@ describe("push — Hermes fixture", () => {
 		expect(uploads).toHaveLength(2);
 		for (const u of uploads) expect(u.isMultipart).toBe(true);
 
-		// sync.json updated
-		const state = JSON.parse(readFileSync(join(tmpHome, ".clawdi", "sync.json"), "utf-8"));
-		expect(state.sessions.lastSyncedAt).toBeDefined();
+		// state.json updated
+		const state = JSON.parse(readFileSync(join(tmpHome, ".clawdi", "state.json"), "utf-8"));
+		expect(state.sessions.lastActivityAt).toBeDefined();
 	});
 
 	it("--dry-run makes zero fetch calls", async () => {
@@ -101,9 +101,9 @@ describe("push — Hermes fixture", () => {
 		expect(uploads[0]!.isMultipart).toBe(true);
 	});
 
-	it("corrupt sync.json is tolerated (warning, not crash)", async () => {
+	it("corrupt state.json is tolerated (warning, not crash)", async () => {
 		setup("hermes");
-		writeFileSync(join(tmpHome, ".clawdi", "sync.json"), "{ not valid json");
+		writeFileSync(join(tmpHome, ".clawdi", "state.json"), "{ not valid json");
 		const { restore } = mockFetch([
 			{ method: "POST", path: "/api/sessions/batch", response: () => jsonResponse({ synced: 2 }) },
 			{ method: "POST", path: "/api/sessions/", response: () => jsonResponse({}) },
@@ -114,7 +114,7 @@ describe("push — Hermes fixture", () => {
 			restore();
 		}
 		// Got here without throwing.
-		expect(existsSync(join(tmpHome, ".clawdi", "sync.json"))).toBe(true);
+		expect(existsSync(join(tmpHome, ".clawdi", "state.json"))).toBe(true);
 	});
 });
 

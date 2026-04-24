@@ -1,6 +1,6 @@
 import * as p from "@clack/prompts";
 import chalk from "chalk";
-import { isInteractive } from "../../lib/tty";
+import { isInteractive } from "./tty";
 
 export type SelectOption<T extends string> = { value: T; label: string; hint?: string };
 

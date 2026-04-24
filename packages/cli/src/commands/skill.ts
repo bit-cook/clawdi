@@ -62,7 +62,7 @@ export async function skillList(opts: { json?: boolean } = {}) {
 	}
 
 	if (skills.length === 0) {
-		console.log(chalk.gray("No skills synced."));
+		console.log(chalk.gray("No skills uploaded."));
 		return;
 	}
 

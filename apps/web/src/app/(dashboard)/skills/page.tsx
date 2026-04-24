@@ -84,7 +84,7 @@ export default function SkillsPage() {
         <div>
           <h1 className="text-2xl font-bold">Skills</h1>
           <p className="text-sm text-muted-foreground mt-1">
-            Portable agent instructions synced across machines.
+            Portable agent instructions shared across machines.
           </p>
         </div>
         {skills && (

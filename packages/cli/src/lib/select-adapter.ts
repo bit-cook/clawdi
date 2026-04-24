@@ -2,10 +2,10 @@ import chalk from "chalk";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { AGENT_TYPES, type AgentType } from "@clawdi-cloud/shared/consts";
-import type { AgentAdapter } from "../../adapters/base";
-import { adapterRegistry, allAdapterEntries, getAdapterEntry } from "../../adapters/registry";
-import { getClawdiDir } from "../../lib/config";
-import { askOne } from "./modules";
+import type { AgentAdapter } from "../adapters/base";
+import { adapterRegistry, allAdapterEntries, getAdapterEntry } from "../adapters/registry";
+import { getClawdiDir } from "./config";
+import { askOne } from "./prompts";
 
 export function getEnvIdByAgent(agentType: string): string | null {
 	const envPath = join(getClawdiDir(), "environments", `${agentType}.json`);

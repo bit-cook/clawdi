@@ -6,8 +6,8 @@ import { AGENT_LABELS } from "@clawdi-cloud/shared/consts";
 import { ApiClient } from "../lib/api-client";
 import { isLoggedIn } from "../lib/config";
 import { sanitizeMetadata } from "../lib/sanitize";
-import { askMulti, askYesNo, parseModules } from "./sync/modules";
-import { selectAdapter } from "./sync/select-adapter";
+import { askMulti, askYesNo, parseModules } from "../lib/prompts";
+import { selectAdapter } from "../lib/select-adapter";
 
 const DOWN_MODULES = [
 	{ value: "skills", label: "Skills", hint: "pull skill archives to agent directories" },

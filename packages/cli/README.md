@@ -1,6 +1,6 @@
 # @clawdi-cloud/cli
 
-iCloud for AI Agents. One CLI to sync sessions, skills, memory, and vault secrets across Claude Code, Codex, OpenClaw, and Hermes — with an MCP server on the other end of the pipe.
+iCloud for AI Agents. One CLI to share sessions, skills, memory, and vault secrets across Claude Code, Codex, OpenClaw, and Hermes — with an MCP server on the other end of the pipe.
 
 ## Requirements
 
@@ -26,12 +26,12 @@ without Bun on `$PATH` — the shipped `bin/clawdi.mjs` uses a
 | Command | What it does |
 | --- | --- |
 | `clawdi auth login` / `logout` | Authenticate with the Clawdi Cloud backend |
-| `clawdi status [--json]` | Show auth + sync state |
+| `clawdi status [--json]` | Show auth + per-module activity |
 | `clawdi config list/get/set/unset` | Manage `~/.clawdi/config.json` |
 | `clawdi setup [--agent <type>] [-y]` | Detect installed agents, register this machine, install built-in skill, wire up MCP |
 | `clawdi push [--modules --since --project --all --agent --dry-run]` | Upload sessions / skills to the cloud |
 | `clawdi pull [--modules --agent --dry-run]` | Download cloud skills to registered agents |
-| `clawdi skill list [--json]` | List synced skills |
+| `clawdi skill list [--json]` | List uploaded skills |
 | `clawdi skill add <path> [-y]` | Upload a skill directory or single `.md` file (prompted preview) |
 | `clawdi skill install <repo> [-a --agent] [-l --list] [-y]` | Install a GitHub skill into cloud and one or more agents |
 | `clawdi skill rm <key>` | Remove a cloud skill |
@@ -69,12 +69,12 @@ Everything clawdi writes lives under `~/.clawdi/`:
 ~/.clawdi/
 ├── config.json        user config (apiUrl)
 ├── auth.json          API key (mode 0600)
-├── sync.json          per-module last-synced timestamps
+├── state.json         per-module last-activity timestamps
 ├── environments/      one file per registered agent
 └── update.json        cached npm registry lookup
 ```
 
-Corrupted `sync.json` is tolerated with a warning, not a crash.
+Corrupted `state.json` is tolerated with a warning, not a crash.
 
 ## Troubleshooting
 
