@@ -1,9 +1,6 @@
 import { SignOutButton } from "@clerk/nextjs";
-import { currentUser } from "@clerk/nextjs/server";
 import { ShieldAlert } from "lucide-react";
-import { redirect } from "next/navigation";
 import { Button } from "@/components/ui/button";
-import { allowlistIsActive, isEmailAllowed } from "@/lib/email-allowlist";
 
 /**
  * Generic denial page. Deliberately does not leak *why* — no allowed-domain
@@ -11,21 +8,13 @@ import { allowlistIsActive, isEmailAllowed } from "@/lib/email-allowlist";
  * a sign-out button. Users who can't see the app shouldn't learn anything
  * from this screen.
  *
- * Self-redirects to `/` when the gate is off or when the signed-in user
- * actually *is* allowed (covers someone typing /access-denied in the URL
- * bar directly).
+ * Renders unconditionally: never redirects back to `/`. The dashboard layout
+ * is the only path that should land a user here. A self-redirect turned any
+ * cross-render disagreement between `currentUser()` calls into an infinite
+ * `/` ↔ `/access-denied` loop in production, so the convenience of auto-
+ * returning allowed users who typed the URL directly is not worth the risk.
  */
-export default async function AccessDeniedPage() {
-	if (!allowlistIsActive()) {
-		redirect("/");
-	}
-	const user = await currentUser();
-	const primaryEmail = user?.emailAddresses.find(
-		(e) => e.id === user.primaryEmailAddressId,
-	)?.emailAddress;
-	if (isEmailAllowed(primaryEmail)) {
-		redirect("/");
-	}
+export default function AccessDeniedPage() {
 	return (
 		<main className="mx-auto flex min-h-dvh max-w-sm flex-col items-center justify-center gap-6 px-6 text-center">
 			<ShieldAlert className="size-12 text-muted-foreground" aria-hidden />
