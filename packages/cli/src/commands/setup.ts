@@ -12,7 +12,7 @@ import {
 } from "@clawdi-cloud/shared/consts";
 import type { AgentAdapter } from "../adapters/base";
 import { getHermesHome } from "../adapters/paths";
-import { adapterRegistry, allAdapterEntries } from "../adapters/registry";
+import { allAdapterEntries, builtinSkillTargetDir } from "../adapters/registry";
 import { ApiClient } from "../lib/api-client";
 import { getClawdiDir, isLoggedIn } from "../lib/config";
 import { isInteractive } from "../lib/tty";
@@ -135,28 +135,6 @@ async function registerEnv(
 			chalk.red(`  Failed to register ${AGENT_LABELS[agentType]}: ${(e as Error).message}`),
 		);
 	}
-}
-
-/**
- * Resolve where the built-in `clawdi` skill should land for each agent.
- * Reuses adapter `home()` resolvers (which honor $CLAUDE_CONFIG_DIR /
- * $CODEX_HOME / $HERMES_HOME / $OPENCLAW_STATE_DIR) so this never drifts
- * from where the adapter actually reads skills back out.
- */
-function builtinSkillTargetDir(agentType: AgentType): string | null {
-	const home = adapterRegistry[agentType].home();
-	if (agentType === "openclaw") {
-		const openclawAgentId = process.env.OPENCLAW_AGENT_ID || "main";
-		return join(home, "agents", openclawAgentId, "skills", "clawdi");
-	}
-	if (
-		agentType === "claude_code" ||
-		agentType === "codex" ||
-		agentType === "hermes"
-	) {
-		return join(home, "skills", "clawdi");
-	}
-	return null;
 }
 
 async function installBuiltinSkill(agentType: AgentType) {

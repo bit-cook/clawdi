@@ -1,3 +1,4 @@
+import { join } from "node:path";
 import { AGENT_LABELS, type AgentType } from "@clawdi-cloud/shared/consts";
 import type { AgentAdapter } from "./base";
 import { ClaudeCodeAdapter } from "./claude-code";
@@ -63,4 +64,26 @@ export function allAdapterEntries(): AdapterRegistryEntry[] {
 
 export function getAdapterEntry(type: AgentType): AdapterRegistryEntry | null {
 	return adapterRegistry[type] ?? null;
+}
+
+/**
+ * Where the bundled `clawdi` skill lives inside an agent's home.
+ * Both `setup` (write) and `teardown` (delete) use this so the two
+ * commands can never disagree about the path.
+ */
+export function builtinSkillTargetDir(agentType: AgentType): string | null {
+	const home = adapterRegistry[agentType]?.home();
+	if (!home) return null;
+	if (agentType === "openclaw") {
+		const openclawAgentId = process.env.OPENCLAW_AGENT_ID || "main";
+		return join(home, "agents", openclawAgentId, "skills", "clawdi");
+	}
+	if (
+		agentType === "claude_code" ||
+		agentType === "codex" ||
+		agentType === "hermes"
+	) {
+		return join(home, "skills", "clawdi");
+	}
+	return null;
 }

@@ -127,6 +127,27 @@ program
 		await setup(opts);
 	});
 
+program
+	.command("teardown")
+	.description("Reverse setup: remove env file, bundled skill, and MCP entry")
+	.option("--agent <type>", "Tear down a single agent (claude_code, codex, openclaw, hermes)")
+	.option("--all", "Tear down every registered agent")
+	.option("--keep-skill", "Don't remove the bundled clawdi skill from the agent")
+	.option("--keep-mcp", "Don't remove the MCP server registration")
+	.option("-y, --yes", "Skip the confirmation prompt")
+	.addHelpText(
+		"after",
+		`
+Examples:
+  $ clawdi teardown --agent claude_code
+  $ clawdi teardown --all --yes
+  $ clawdi teardown --agent hermes --keep-skill`,
+	)
+	.action(async (opts) => {
+		const { teardown } = await import("./commands/teardown.js");
+		await teardown(opts);
+	});
+
 // ─────────────────────────────────────────────────────────────
 // push / pull (replaces `sync up` / `sync down`)
 // ─────────────────────────────────────────────────────────────
