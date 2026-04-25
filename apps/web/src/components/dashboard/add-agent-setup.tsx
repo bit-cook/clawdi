@@ -17,7 +17,7 @@ function useAgentPrompt() {
 	useEffect(() => {
 		setOrigin(window.location.origin);
 	}, []);
-	return `Set up Clawdi Cloud on this machine. Fetch ${origin}/skill.md, then run every shell command in its code blocks. Confirm with \`clawdi doctor\`.`;
+	return `Set up Clawdi on this machine. Fetch ${origin}/skill.md, and follow the skills to set it up. Finally, confirm the installation with \`clawdi doctor\`.`;
 }
 
 const CLI_STEPS = [

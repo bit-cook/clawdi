@@ -3,7 +3,17 @@ import { hostname } from "node:os";
 import * as p from "@clack/prompts";
 import chalk from "chalk";
 import { ApiClient, ApiError, unwrap } from "../lib/api-client";
-import { clearAuth, getAuth, getConfig, isLoggedIn, setAuth } from "../lib/config";
+import {
+	clearAuth,
+	clearPendingAuth,
+	getAuth,
+	getConfig,
+	getPendingAuth,
+	isLoggedIn,
+	type PendingAuth,
+	setAuth,
+	setPendingAuth,
+} from "../lib/config";
 
 interface MeResponse {
 	id: string;
@@ -123,7 +133,19 @@ interface DeviceStart {
 	interval: number;
 }
 
-async function authLoginDeviceFlow(apiUrl: string) {
+/**
+ * Start the device flow: request a device_code from the server, persist it
+ * to `~/.clawdi/pending-auth.json`, print the verification URL + user_code,
+ * and try to open the browser. Does NOT poll — that's the caller's job
+ * (via `pollUntilApproved`). Returns the pending state on success, null
+ * on failure (after printing diagnostics).
+ *
+ * Splitting start from poll lets non-interactive callers (CI, AI agents
+ * whose Bash tool blocks until the process exits) finish `auth login` in
+ * milliseconds, surface the URL/code to the user, and resume via
+ * `auth complete` — without holding a 10-minute polling loop open.
+ */
+async function startDeviceFlow(apiUrl: string): Promise<PendingAuth | null> {
 	// `requireAuth: false` is essential — we're in the bootstrap path where
 	// no api_key exists yet. The /device + /poll endpoints don't take auth.
 	const api = new ApiClient({ requireAuth: false });
@@ -152,8 +174,18 @@ async function authLoginDeviceFlow(apiUrl: string) {
 		);
 		p.outro(chalk.red("Aborted."));
 		process.exitCode = 1;
-		return;
+		return null;
 	}
+
+	const pending: PendingAuth = {
+		deviceCode: start.device_code,
+		userCode: start.user_code,
+		verificationUri: start.verification_uri,
+		expiresAt: Math.floor(Date.now() / 1000) + start.expires_in,
+		intervalMs: Math.max(1, start.interval) * 1000,
+		apiUrl,
+	};
+	setPendingAuth(pending);
 
 	p.log.message(
 		`Opening your browser to authorize this machine...\n` +
@@ -166,20 +198,43 @@ async function authLoginDeviceFlow(apiUrl: string) {
 	);
 	openInBrowser(start.verification_uri);
 
+	return pending;
+}
+
+/**
+ * Poll the server until the device authorization is approved, denied, or
+ * the wait window elapses. Used by both the inline (TTY) login path and
+ * the resumable `auth complete` command. Sets process.exitCode on failure
+ * and returns true iff the user is now authenticated.
+ *
+ * `maxWaitMs` caps how long we'll poll *this invocation* — independent of
+ * the server-side device TTL. Short waits are critical in non-TTY mode
+ * (agent calling complete prematurely shouldn't hang the agent for 10
+ * minutes); the device_code stays valid server-side, so the user can
+ * approve and re-run `complete` to resume.
+ */
+async function pollUntilApproved(
+	pending: PendingAuth,
+	opts: { maxWaitMs?: number } = {},
+): Promise<boolean> {
+	const api = new ApiClient({ requireAuth: false });
 	const spinner = p.spinner();
 	spinner.start("Waiting for you to authorize in the browser...");
 
-	const deadline = Date.now() + start.expires_in * 1000;
-	const intervalMs = Math.max(1, start.interval) * 1000;
+	const serverDeadline = pending.expiresAt * 1000;
+	const deadline = opts.maxWaitMs
+		? Math.min(serverDeadline, Date.now() + opts.maxWaitMs)
+		: serverDeadline;
+	const hitClientCap = () => deadline < serverDeadline;
 
 	while (Date.now() < deadline) {
-		await new Promise((r) => setTimeout(r, intervalMs));
+		await new Promise((r) => setTimeout(r, pending.intervalMs));
 
 		let poll: { status: string; api_key?: string | null };
 		try {
 			poll = unwrap(
 				await api.POST("/api/cli/auth/poll", {
-					body: { device_code: start.device_code },
+					body: { device_code: pending.deviceCode },
 				}),
 			);
 		} catch (e) {
@@ -200,37 +255,59 @@ async function authLoginDeviceFlow(apiUrl: string) {
 			// consumed server-side and we cannot fetch it again. If /me errors,
 			// the key is still valid — keep it on disk so the user isn't
 			// silently locked out.
-			const me = await saveThenVerify(poll.api_key, apiUrl);
+			const me = await saveThenVerify(poll.api_key, pending.apiUrl);
+			clearPendingAuth();
 			if (!me) {
 				verify.stop(chalk.yellow("Key saved, but /me check failed."));
 				p.log.message(chalk.gray("Run `clawdi status` once your network is healthy to confirm."));
 				p.outro(chalk.gray("Credentials saved to ~/.clawdi/auth.json"));
-				return;
+				return true;
 			}
 			verify.stop(chalk.green(`Logged in as ${me.email || me.name || me.id}`));
 			postLoginHint();
-			return;
+			return true;
 		}
 
 		if (poll.status === "denied") {
 			spinner.stop(chalk.red("Authorization denied in the browser."));
+			clearPendingAuth();
 			p.outro(chalk.red("Aborted."));
 			process.exitCode = 1;
-			return;
+			return false;
 		}
 
-		// "expired" or any unknown status — bail out.
+		// "expired" or any unknown status — bail out (server-side terminal).
 		spinner.stop(chalk.yellow("Authorization expired."));
+		clearPendingAuth();
 		p.log.message(chalk.gray("Run `clawdi auth login` again to retry."));
 		p.outro(chalk.red("Aborted."));
 		process.exitCode = 1;
-		return;
+		return false;
+	}
+
+	// Loop exited via deadline. If we hit the *client* cap, the device_code
+	// is still valid server-side — preserve pending so the user can re-run
+	// `clawdi auth complete` after they finish approving.
+	if (hitClientCap()) {
+		const minutesLeft = Math.max(1, Math.ceil((serverDeadline - Date.now()) / 60_000));
+		spinner.stop(chalk.yellow("Still waiting for approval."));
+		p.log.message(
+			chalk.gray(
+				`After approving in your browser, run: ${chalk.bold("clawdi auth complete")}\n` +
+					`The pending authorization stays valid for about ${minutesLeft} more minute${minutesLeft === 1 ? "" : "s"}.`,
+			),
+		);
+		p.outro(chalk.gray("Not yet approved."));
+		process.exitCode = 2; // distinct from generic failure (1)
+		return false;
 	}
 
 	spinner.stop(chalk.yellow("Timed out waiting for authorization."));
+	clearPendingAuth();
 	p.log.message(chalk.gray("Run `clawdi auth login` again to retry."));
 	p.outro(chalk.red("Aborted."));
 	process.exitCode = 1;
+	return false;
 }
 
 export async function authLogin(opts: { manual?: boolean } = {}) {
@@ -241,16 +318,15 @@ export async function authLogin(opts: { manual?: boolean } = {}) {
 		return;
 	}
 
-	// Both paths below need a TTY: device flow opens a browser and shows a
-	// code, manual flow uses an interactive password prompt. Bail out early
-	// in CI/SSH-without-pty/piped-stdout — the alternative is a 10-minute
-	// silent poll-timeout (device) or a hung password prompt (manual).
-	// Headless installs should pre-populate `~/.clawdi/auth.json` directly.
-	if (!process.stdout.isTTY || !process.stdin.isTTY) {
-		p.log.error("`clawdi auth login` needs an interactive terminal.");
+	// Manual flow uses an interactive password prompt and genuinely cannot
+	// run without a TTY. Device flow, by contrast, just prints a URL + code
+	// and (in non-TTY mode) exits immediately for the agent to relay.
+	if (opts.manual && (!process.stdout.isTTY || !process.stdin.isTTY)) {
+		p.log.error("`clawdi auth login --manual` needs an interactive terminal.");
 		p.log.message(
 			chalk.gray(
-				"Headless setup: write your API key directly to `~/.clawdi/auth.json`:\n" +
+				"Drop --manual to use the device flow (works non-interactively),\n" +
+					"or write your API key directly to `~/.clawdi/auth.json`:\n" +
 					'  { "apiKey": "clawdi_…" }',
 			),
 		);
@@ -267,7 +343,57 @@ export async function authLogin(opts: { manual?: boolean } = {}) {
 		return;
 	}
 
-	await authLoginDeviceFlow(config.apiUrl);
+	const pending = await startDeviceFlow(config.apiUrl);
+	if (!pending) return; // diagnostics already printed by startDeviceFlow
+
+	// Interactive humans get the one-shot experience: stay open and poll
+	// until they finish in the browser. Non-interactive callers (CI, AI
+	// agents) get a fast exit so they can surface the URL/code to a human;
+	// that human resumes via `clawdi auth complete`.
+	const interactive = process.stdout.isTTY && process.stdin.isTTY;
+	if (interactive) {
+		await pollUntilApproved(pending);
+		return;
+	}
+
+	p.log.message(
+		chalk.gray("After approving in your browser, run: ") + chalk.bold("clawdi auth complete"),
+	);
+	p.outro(chalk.gray("Authorization started. Waiting for browser approval."));
+}
+
+export async function authComplete() {
+	if (isLoggedIn()) {
+		const existing = getAuth();
+		p.log.info(`Already logged in as ${existing?.email || existing?.userId || "unknown"}.`);
+		return;
+	}
+
+	const pending = getPendingAuth();
+	if (!pending) {
+		p.log.error("No pending authorization. Run `clawdi auth login` first.");
+		process.exitCode = 1;
+		return;
+	}
+
+	if (Date.now() / 1000 >= pending.expiresAt) {
+		p.log.error("Pending authorization has expired.");
+		p.log.message(chalk.gray("Run `clawdi auth login` again to start a new one."));
+		clearPendingAuth();
+		process.exitCode = 1;
+		return;
+	}
+
+	p.intro(chalk.bold("clawdi auth complete"));
+	p.log.message(chalk.gray("Resuming authorization for code: ") + chalk.bold(pending.userCode));
+
+	// In non-TTY mode, cap the wait so an over-eager agent (running
+	// `complete` before the user has actually approved) doesn't hang for
+	// the full 10-minute server TTL. The pending state survives a short
+	// timeout, so the agent can simply re-run `complete` after confirming.
+	const interactive = process.stdout.isTTY && process.stdin.isTTY;
+	const maxWaitMs = interactive ? undefined : 30_000;
+	await pollUntilApproved(pending, { maxWaitMs });
 }
 
 export async function authLogout() {

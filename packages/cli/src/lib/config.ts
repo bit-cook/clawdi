@@ -15,6 +15,9 @@ function configFile() {
 function authFile() {
 	return join(clawdiDir(), "auth.json");
 }
+function pendingAuthFile() {
+	return join(clawdiDir(), "pending-auth.json");
+}
 
 export interface ClawdiConfig {
 	apiUrl: string;
@@ -32,6 +35,20 @@ export interface ClawdiAuth {
 	apiKey: string;
 	userId?: string;
 	email?: string;
+}
+
+/**
+ * Persisted between `clawdi auth login` (which kicks off the device flow
+ * and exits in non-interactive contexts) and `clawdi auth complete` (which
+ * resumes polling after the user has approved in their browser).
+ */
+export interface PendingAuth {
+	deviceCode: string;
+	userCode: string;
+	verificationUri: string;
+	expiresAt: number; // unix seconds — absolute, not duration
+	intervalMs: number;
+	apiUrl: string; // sanity-check at completion time
 }
 
 function ensureDir() {
@@ -108,6 +125,21 @@ export function clearAuth() {
 
 export function isLoggedIn(): boolean {
 	return getAuth() !== null;
+}
+
+export function getPendingAuth(): PendingAuth | null {
+	return readJson<PendingAuth>(pendingAuthFile());
+}
+
+export function setPendingAuth(pending: PendingAuth) {
+	writeJson(pendingAuthFile(), pending);
+}
+
+export function clearPendingAuth() {
+	const p = pendingAuthFile();
+	if (existsSync(p)) {
+		unlinkSync(p);
+	}
 }
 
 export function getClawdiDir(): string {

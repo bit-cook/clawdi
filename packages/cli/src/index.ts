@@ -53,6 +53,14 @@ authCmd
 	});
 
 authCmd
+	.command("complete")
+	.description("Finish a login started in non-interactive mode (after browser approval)")
+	.action(async () => {
+		const { authComplete } = await import("./commands/auth.js");
+		await authComplete();
+	});
+
+authCmd
 	.command("logout")
 	.description("Remove local credentials")
 	.action(async () => {

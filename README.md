@@ -1,5 +1,7 @@
 # Clawdi
 
+![Clawdi dashboard](docs/images/dashboard-preview.png)
+
 > iCloud for AI agents. Share memory, skills, sessions, and secrets across Claude Code, Codex, OpenClaw, Hermes, and whatever agent you wire up next.
 
 Clawdi gives local coding agents a shared context layer. Install one CLI, connect your agents once, and they can remember durable facts, reuse skills, sync session history, and run commands with vault secrets without copying state between tools.

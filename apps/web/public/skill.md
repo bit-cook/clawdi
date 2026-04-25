@@ -19,13 +19,36 @@ If bun is not available, use npm:
 npm install -g clawdi
 ```
 
-## Step 2: Log in
+## Step 2: Log in (two steps)
+
+This is a two-step flow so the agent never blocks waiting for the user.
+
+**Step 2a — start the authorization:**
 
 ```bash
 clawdi auth login
 ```
 
-This opens the user's browser to a one-click authorization page on the Clawdi Cloud dashboard. Tell them to confirm the request — the CLI will pick up the credentials automatically. If their environment can't open a browser (SSH, container), tell them to run `clawdi auth login --manual` and paste an API key from **Settings → API Keys**.
+The command exits immediately after printing a **verification URL** and a short **user code**. **Show both to the user in chat** and ask them to:
+
+1. Open the URL.
+2. Confirm the code matches.
+3. Click approve.
+4. **Reply "done" (or anything similar) here when finished** — you need that reply before moving to Step 2b.
+
+The CLI tries to open their browser too, but in agent/sandboxed environments that usually no-ops silently — so they need the link.
+
+**Step 2b — after the user confirms they approved:**
+
+```bash
+clawdi auth complete
+```
+
+This finishes the handshake (typically in a second or two) and writes credentials to `~/.clawdi/auth.json`. The pending authorization is valid for **10 minutes** from when `clawdi auth login` was run.
+
+If `clawdi auth complete` exits with **"Still waiting for approval"** (exit code 2), the user hasn't approved yet — ask them to finish approving in the browser, then re-run `clawdi auth complete`. It's safe to re-run as many times as needed within the 10-minute window. If the window expires, start over from Step 2a.
+
+Do not use `--manual` here: that flag requires an interactive password prompt (TTY) and will fail in an agent session.
 
 ## Step 3: Set up agent
 
