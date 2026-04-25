@@ -4,18 +4,38 @@ import { extractTarGz } from "../lib/tar";
 import type { AgentAdapter, RawSession, RawSkill, SessionMessage } from "./base";
 import { getHermesHome, SKIP_DIRS } from "./paths";
 
-// Hermes state is stored in a SQLite db opened via `bun:sqlite`. That module
-// only exists under Bun, so we defer the import until actually reading the db
-// — other Hermes operations (detect, skills) work on plain Node.
-async function loadBunSqlite(): Promise<typeof import("bun:sqlite")> {
-	if (typeof (globalThis as { Bun?: unknown }).Bun === "undefined") {
-		throw new Error(
-			"Hermes session ingestion requires the Bun runtime (uses bun:sqlite). " +
-				"Install Bun from https://bun.sh and re-run, or push other agents with " +
-				"`clawdi push --agent claude_code,codex,openclaw`.",
-		);
+/**
+ * Minimal SQLite shape that both `bun:sqlite` and Node's built-in
+ * `node:sqlite` implement. Enough for our read-only Hermes access pattern.
+ */
+interface SqliteStatement {
+	all(...params: unknown[]): unknown[];
+}
+interface SqliteDatabase {
+	prepare(sql: string): SqliteStatement;
+	close(): void;
+}
+
+/**
+ * Open a Hermes SQLite db using the runtime's built-in binding:
+ * - Under Bun: `bun:sqlite` (built-in, the dev/test default).
+ * - Under Node 22.5+: `node:sqlite` (built-in; Node 22.x still emits an
+ *   ExperimentalWarning at first import, harmless and one-shot).
+ *
+ * Neither cross-loads — Bun has no `node:sqlite` (oven-sh/bun#15561) and
+ * Node has no `bun:sqlite`. Importing lazily means users who never touch
+ * Hermes don't pay the load cost or hear the experimental warning.
+ *
+ * Both expose a `prepare(sql).all(args)` surface, so call sites stay
+ * runtime-agnostic.
+ */
+async function openHermesDb(path: string): Promise<SqliteDatabase> {
+	if (typeof (globalThis as { Bun?: unknown }).Bun !== "undefined") {
+		const { Database } = await import("bun:sqlite");
+		return new Database(path, { readonly: true }) as unknown as SqliteDatabase;
 	}
-	return await import("bun:sqlite");
+	const { DatabaseSync } = await import("node:sqlite");
+	return new DatabaseSync(path, { readOnly: true }) as unknown as SqliteDatabase;
 }
 
 function hermesDir() {
@@ -69,8 +89,7 @@ export class HermesAdapter implements AgentAdapter {
 	async collectSessions(since?: Date, _projectFilter?: string): Promise<RawSession[]> {
 		if (!existsSync(stateDbPath())) return [];
 
-		const { Database } = await loadBunSqlite();
-		const db = new Database(stateDbPath(), { readonly: true });
+		const db = await openHermesDb(stateDbPath());
 		try {
 			const sinceEpoch = since ? since.getTime() / 1000 : 0;
 
@@ -93,7 +112,7 @@ export class HermesAdapter implements AgentAdapter {
 			}
 
 			const rows = db
-				.query(`
+				.prepare(`
 					SELECT id, source, model, title, started_at, ended_at,
 					       message_count, input_tokens, output_tokens, cache_read_tokens
 					FROM sessions
@@ -102,7 +121,7 @@ export class HermesAdapter implements AgentAdapter {
 				`)
 				.all(sinceEpoch) as SessionRow[];
 
-			const msgStmt = db.query(`
+			const msgStmt = db.prepare(`
 				SELECT role, content, timestamp
 				FROM messages
 				WHERE session_id = ? AND role IN ('user', 'assistant') AND content IS NOT NULL
