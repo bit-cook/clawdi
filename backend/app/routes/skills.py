@@ -84,16 +84,22 @@ def _compute_file_tree_hash(tar_bytes: bytes) -> str:
             if not member.isfile():
                 continue
             # Names are like "<skill_key>/foo/bar.txt" — drop the first
-            # segment (the skill dir itself), then check remaining
-            # segments against the exclude set. Same shape as tar.ts's
-            # filter.
+            # segment (the skill dir itself) so the relative path matches
+            # the TS side, which hashes paths from the skill dir's POV
+            # (e.g. "SKILL.md" not "<skill_key>/SKILL.md"). Without this,
+            # the same content produces different hashes on each side and
+            # the backwards-compat fallback / marketplace-install path
+            # would diverge from client hashes forever.
             parts = member.name.split("/")
             if any(p in _SKILL_HASH_EXCLUDE for p in parts[1:]):
+                continue
+            relative_path = "/".join(parts[1:])
+            if not relative_path:
                 continue
             extracted = tf.extractfile(member)
             if extracted is None:
                 continue
-            files.append((member.name, extracted.read()))
+            files.append((relative_path, extracted.read()))
 
     files.sort(key=lambda x: x[0])
     h = hashlib.sha256()

@@ -47,7 +47,14 @@ const CURRENT_VERSION = 1;
 export async function computeSkillFolderHash(skillDir: string): Promise<string> {
 	const files: Array<{ relativePath: string; content: Buffer }> = [];
 	await collectFiles(skillDir, skillDir, files);
-	files.sort((a, b) => a.relativePath.localeCompare(b.relativePath));
+	// Codepoint sort, NOT localeCompare — Python's default `list.sort()` is
+	// codepoint-based, so the server-side mirror in
+	// `backend/app/routes/skills.py:_compute_file_tree_hash` would diverge
+	// (e.g. "SKILL.md" vs "reference/notes.md" reorders by case under
+	// localeCompare). Both sides MUST sort identically or hashes drift.
+	files.sort((a, b) =>
+		a.relativePath < b.relativePath ? -1 : a.relativePath > b.relativePath ? 1 : 0,
+	);
 
 	const hash = createHash("sha256");
 	for (const f of files) {
