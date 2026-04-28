@@ -179,13 +179,14 @@ export class ApiClient {
 		skillKey: string,
 		file: Buffer,
 		filename: string,
+		contentHash?: string,
 	): Promise<SkillUploadResponse> {
-		return this.multipartPost<SkillUploadResponse>(
-			"/api/skills/upload",
-			{ skill_key: skillKey },
-			file,
-			filename,
-		);
+		// `content_hash` is optional server-side (added 0.3.4). Omit the
+		// field entirely when the caller doesn't have one — server falls
+		// back to computing it from the uploaded tar.
+		const fields: Record<string, string> = { skill_key: skillKey };
+		if (contentHash) fields.content_hash = contentHash;
+		return this.multipartPost<SkillUploadResponse>("/api/skills/upload", fields, file, filename);
 	}
 
 	/** Upload per-session content JSON to `/api/sessions/{id}/upload`. */
@@ -200,6 +201,11 @@ export class ApiClient {
 			file,
 			filename,
 		);
+	}
+
+	/** Download session content (an array of messages) from the cloud. */
+	async getSessionContent(sessionId: string): Promise<Buffer> {
+		return this.getBytes(`/api/sessions/${encodeURIComponent(sessionId)}/content`);
 	}
 
 	/** Shared multipart POST; never retried (non-idempotent). */

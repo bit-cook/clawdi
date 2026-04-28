@@ -1,7 +1,13 @@
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { basename, join } from "node:path";
 import { extractTarGz } from "../lib/tar";
-import type { AgentAdapter, RawSession, RawSkill, SessionMessage } from "./base";
+import type {
+	AgentAdapter,
+	CollectSessionsOptions,
+	RawSession,
+	RawSkill,
+	SessionMessage,
+} from "./base";
 import { getClaudeHome, SKIP_DIRS } from "./paths";
 
 function claudeDir() {
@@ -68,8 +74,10 @@ export class ClaudeCodeAdapter implements AgentAdapter {
 		return absPath.replace(/\//g, "-");
 	}
 
-	async collectSessions(since?: Date, projectFilter?: string): Promise<RawSession[]> {
+	async collectSessions(opts: CollectSessionsOptions = {}): Promise<RawSession[]> {
 		if (!existsSync(projectsDir())) return [];
+
+		const { projectFilter } = opts;
 
 		const sessions: RawSession[] = [];
 		let projectDirs = readdirSync(projectsDir(), { withFileTypes: true }).filter((d) =>
@@ -102,8 +110,6 @@ export class ClaudeCodeAdapter implements AgentAdapter {
 				try {
 					const parsed = this.parseSessionJsonl(filePath, projectDir.name);
 					if (!parsed) continue;
-
-					if (since && parsed.startedAt < since) continue;
 
 					if (absFilter) {
 						const cwd = parsed.projectPath;
@@ -236,6 +242,12 @@ export class ClaudeCodeAdapter implements AgentAdapter {
 		for (const entry of readdirSync(skillsDir, { withFileTypes: true })) {
 			if (!entry.isDirectory()) continue;
 			if (SKIP_DIRS.has(entry.name)) continue;
+			// Bundled by `clawdi setup` — not user-authored content. Without
+			// this filter every user's `clawdi push --modules skills` would
+			// upload the bundled skill to their cloud account, and pulling
+			// on another machine would re-download it on top of what
+			// `clawdi setup` already installs there.
+			if (entry.name === "clawdi") continue;
 			const dirPath = join(skillsDir, entry.name);
 			const skillMd = join(dirPath, "SKILL.md");
 			if (!existsSync(skillMd)) continue;

@@ -15,7 +15,8 @@ program
 Examples:
   $ clawdi auth login               Authenticate with Clawdi Cloud
   $ clawdi setup                    Detect agents and register the current machine
-  $ clawdi push                     Upload local sessions/skills to the cloud
+  $ clawdi session list             Preview local sessions before pushing
+  $ clawdi push --modules sessions --all-agents --all  Upload everything
   $ clawdi pull                     Download cloud skills to registered agents
   $ clawdi skill list --json        Machine-readable skill listing
   $ clawdi memory search "redis"    Search memories by text
@@ -165,11 +166,18 @@ program
 	.command("push")
 	.description("Push local data (sessions, skills) to the cloud")
 	.option("--modules <modules>", "Comma-separated: sessions,skills")
-	.option("--since <date>", "Only push data modified after this date")
 	.option("--project <path>", "Push a specific project's data (default: current directory)")
+	.option(
+		"--exclude-project <path>",
+		"Exclude a project path (repeatable, mutex with --project)",
+		(value: string, prev: string[] = []) => prev.concat(value),
+		[] as string[],
+	)
 	.option("--all", "Push data from all projects")
 	.option("--agent <type>", "Target agent (claude_code, codex, hermes, openclaw)")
+	.option("--all-agents", "Push from every registered agent on this machine")
 	.option("--dry-run", "Preview without uploading")
+	.option("-y, --yes", "Skip the upload confirmation prompt")
 	.addHelpText(
 		"after",
 		`
@@ -177,7 +185,8 @@ Examples:
   $ clawdi push
   $ clawdi push --modules skills
   $ clawdi push --agent claude_code --dry-run
-  $ clawdi push --since 2026-01-01 --all`,
+  $ clawdi push --modules sessions --all-agents --all --yes
+  $ clawdi push --modules sessions --all-agents --all --exclude-project ~/scratch --yes`,
 	)
 	.action(async (opts) => {
 		const { push } = await import("./commands/push.js");
@@ -186,15 +195,20 @@ Examples:
 
 program
 	.command("pull")
-	.description("Pull cloud data (skills) to registered agents")
-	.option("--modules <modules>", "Comma-separated: skills")
+	.description(
+		"Pull cloud data — `skills` writes archives to agent dirs; `sessions` mirrors to ~/.clawdi/sessions/",
+	)
+	.option("--modules <modules>", "Comma-separated: skills,sessions")
 	.option("--agent <type>", "Target agent (claude_code, codex, hermes, openclaw)")
+	.option("--all-agents", "Pull for every registered agent on this machine")
 	.option("--dry-run", "Preview without downloading")
+	.option("-y, --yes", "Skip confirmation prompts")
 	.addHelpText(
 		"after",
 		`
 Examples:
   $ clawdi pull
+  $ clawdi pull --modules sessions --all-agents --yes
   $ clawdi pull --agent claude_code --dry-run`,
 	)
 	.action(async (opts) => {
@@ -298,6 +312,54 @@ skillCmd
 	.action(async (name) => {
 		const { skillInit } = await import("./commands/skill.js");
 		skillInit(name);
+	});
+
+// ─────────────────────────────────────────────────────────────
+// session
+// ─────────────────────────────────────────────────────────────
+const sessionCmd = program.command("session").description("Inspect local agent sessions");
+
+sessionCmd
+	.command("list")
+	.description("List local agent sessions (use before `clawdi push` to preview)")
+	.option("--agent <type>", "Single agent (claude_code, codex, hermes, openclaw)")
+	.option("--all-agents", "List sessions from every registered agent (default)")
+	.option("--project <path>", "Restrict to one project path")
+	.option("--all", "List sessions from all projects (default when --project not set)")
+	.option("--since <date>", "Only list sessions started after this date")
+	.option("--limit <n>", "Cap results", "100")
+	.option("--json", "Output as JSON")
+	.addHelpText(
+		"after",
+		`
+Examples:
+  $ clawdi session list
+  $ clawdi session list --json
+  $ clawdi session list --agent claude_code --project ~/work/foo`,
+	)
+	.action(async (opts) => {
+		const { sessionList } = await import("./commands/session.js");
+		await sessionList(opts);
+	});
+
+sessionCmd
+	.command("extract <session-id>")
+	.description("Extract memories from a session via the cloud's configured LLM")
+	.option("--json", "Output result as JSON")
+	.addHelpText(
+		"after",
+		`
+Examples:
+  $ clawdi session extract a1b2c3d4-...
+  $ clawdi session extract a1b2c3d4-... --json
+  # Loop the recent 10 sessions (the onboarding skill does this):
+  $ clawdi session list --limit 10 --json | \\
+      jq -r '.[].id' | \\
+      xargs -I{} clawdi session extract {} --json`,
+	)
+	.action(async (sessionId, opts) => {
+		const { sessionExtract } = await import("./commands/session.js");
+		await sessionExtract(sessionId, opts);
 	});
 
 // ─────────────────────────────────────────────────────────────

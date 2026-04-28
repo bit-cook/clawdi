@@ -1,7 +1,13 @@
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { join, relative } from "node:path";
 import { extractTarGz } from "../lib/tar";
-import type { AgentAdapter, RawSession, RawSkill, SessionMessage } from "./base";
+import type {
+	AgentAdapter,
+	CollectSessionsOptions,
+	RawSession,
+	RawSkill,
+	SessionMessage,
+} from "./base";
 import { getHermesHome, SKIP_DIRS } from "./paths";
 
 /**
@@ -86,13 +92,15 @@ export class HermesAdapter implements AgentAdapter {
 		}
 	}
 
-	async collectSessions(since?: Date, _projectFilter?: string): Promise<RawSession[]> {
+	async collectSessions(_opts: CollectSessionsOptions = {}): Promise<RawSession[]> {
+		// Hermes' SQLite is a single file with no per-row stat info, so we
+		// always scan the whole `sessions` table. Cost is negligible
+		// (dozens to hundreds of rows). `projectFilter` has no analogue
+		// in Hermes' data model and is silently ignored.
 		if (!existsSync(stateDbPath())) return [];
 
 		const db = await openHermesDb(stateDbPath());
 		try {
-			const sinceEpoch = since ? since.getTime() / 1000 : 0;
-
 			interface SessionRow {
 				id: string;
 				source: string | null;
@@ -116,10 +124,9 @@ export class HermesAdapter implements AgentAdapter {
 					SELECT id, source, model, title, started_at, ended_at,
 					       message_count, input_tokens, output_tokens, cache_read_tokens
 					FROM sessions
-					WHERE started_at >= ?
 					ORDER BY started_at DESC
 				`)
-				.all(sinceEpoch) as SessionRow[];
+				.all() as SessionRow[];
 
 			const msgStmt = db.prepare(`
 				SELECT role, content, timestamp
@@ -200,6 +207,11 @@ export class HermesAdapter implements AgentAdapter {
 		for (const entry of readdirSync(dir, { withFileTypes: true })) {
 			if (!entry.isDirectory()) continue;
 			if (SKIP_DIRS.has(entry.name)) continue;
+			// Bundled by `clawdi setup`, not user-authored. See claude-code.ts
+			// for the full reasoning. Hermes only filters at the top level
+			// — nested skills with the literal name "clawdi" deeper in the
+			// tree are an unlikely edge case not worth handling.
+			if (dir === skillsDir() && entry.name === "clawdi") continue;
 			const fullPath = join(dir, entry.name);
 			const skillMd = join(fullPath, "SKILL.md");
 

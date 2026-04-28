@@ -4,14 +4,16 @@ import chalk from "chalk";
 import { getClawdiDir } from "./config";
 
 /**
- * Per-module activity timestamps tracked in `~/.clawdi/state.json`.
- * Both `push` and `pull` update the relevant module's `lastActivityAt`.
- * `push --since` uses it as an incremental cursor when no explicit
- * `--since` is supplied.
+ * Per-module activity tracked in `~/.clawdi/state.json`.
+ *
+ * `lastActivityAt` is informational — surfaced by `clawdi status` so users
+ * know when a module last did anything. The session sync's content-hash
+ * cache lives separately in `~/.clawdi/sessions-lock.json`; see
+ * `lib/sessions-lock.ts`.
  */
 export interface ModuleState {
 	[module: string]: {
-		lastActivityAt: string;
+		lastActivityAt?: string;
 	};
 }
 

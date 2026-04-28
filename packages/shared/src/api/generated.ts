@@ -198,9 +198,10 @@ export interface paths {
 		 * Batch Create Sessions
 		 * @description Ingest a batch of sessions from a CLI sync.
 		 *
-		 *     Relies on the `uq_sessions_user_local` unique constraint plus Postgres
-		 *     `ON CONFLICT DO NOTHING` for idempotency — safe under concurrent
-		 *     invocations and a single round-trip to the DB regardless of batch size.
+		 *     Upserts every row by `(user_id, local_session_id)`. The response tells
+		 *     the client which sessions still need a content upload — either because
+		 *     the stored hash differs from the one just sent, or because no content
+		 *     has ever been uploaded for that row (`file_key IS NULL`).
 		 */
 		post: operations["batch_create_sessions_api_sessions_batch_post"];
 		delete?: never;
@@ -277,6 +278,36 @@ export interface paths {
 		get: operations["get_session_content_api_sessions__session_id__content_get"];
 		put?: never;
 		post?: never;
+		delete?: never;
+		options?: never;
+		head?: never;
+		patch?: never;
+		trace?: never;
+	};
+	"/api/sessions/{local_session_id}/extract": {
+		parameters: {
+			query?: never;
+			header?: never;
+			path?: never;
+			cookie?: never;
+		};
+		get?: never;
+		put?: never;
+		/**
+		 * Extract Session Memories
+		 * @description Extract memories from a session's content via the configured LLM.
+		 *
+		 *     Uses `local_session_id` for path lookup (mirrors the upload endpoint
+		 *     pattern) — `uq_sessions_user_local` makes that a unique index.
+		 *
+		 *     Not idempotent — every call hits the LLM. Onboarding loops over
+		 *     each session exactly once; the future dashboard button is a
+		 *     user-initiated single click. Tracking "already extracted" state
+		 *     on the server would force us to also reason about session updates
+		 *     (re-pushed content with new turns), which is more complexity than
+		 *     a one-shot $0.001 LLM call is worth.
+		 */
+		post: operations["extract_session_memories_api_sessions__local_session_id__extract_post"];
 		delete?: never;
 		options?: never;
 		head?: never;
@@ -861,6 +892,8 @@ export interface components {
 			skill_key: string;
 			/** File */
 			file: string;
+			/** Content Hash */
+			content_hash?: string | null;
 		};
 		/** ConnectRequest */
 		ConnectRequest: {
@@ -1231,8 +1264,14 @@ export interface components {
 		};
 		/** SessionBatchResponse */
 		SessionBatchResponse: {
-			/** Synced */
-			synced: number;
+			/** Created */
+			created: number;
+			/** Updated */
+			updated: number;
+			/** Unchanged */
+			unchanged: number;
+			/** Needs Content */
+			needs_content: string[];
 		};
 		/** SessionCreate */
 		SessionCreate: {
@@ -1287,6 +1326,8 @@ export interface components {
 			 * @default completed
 			 */
 			status: string;
+			/** Content Hash */
+			content_hash?: string | null;
 		};
 		/** SessionDetailResponse */
 		SessionDetailResponse: {
@@ -1307,6 +1348,11 @@ export interface components {
 			started_at: string;
 			/** Ended At */
 			ended_at: string | null;
+			/**
+			 * Updated At
+			 * Format: date-time
+			 */
+			updated_at: string;
 			/** Duration Seconds */
 			duration_seconds: number | null;
 			/** Message Count */
@@ -1327,8 +1373,18 @@ export interface components {
 			tags: string[] | null;
 			/** Status */
 			status: string;
+			/** Content Hash */
+			content_hash?: string | null;
 			/** Has Content */
 			has_content: boolean;
+		};
+		/**
+		 * SessionExtractResponse
+		 * @description Result of `POST /api/sessions/{local_session_id}/extract`.
+		 */
+		SessionExtractResponse: {
+			/** Memories Created */
+			memories_created: number;
 		};
 		/** SessionListItemResponse */
 		SessionListItemResponse: {
@@ -1349,6 +1405,11 @@ export interface components {
 			started_at: string;
 			/** Ended At */
 			ended_at: string | null;
+			/**
+			 * Updated At
+			 * Format: date-time
+			 */
+			updated_at: string;
 			/** Duration Seconds */
 			duration_seconds: number | null;
 			/** Message Count */
@@ -1369,6 +1430,8 @@ export interface components {
 			tags: string[] | null;
 			/** Status */
 			status: string;
+			/** Content Hash */
+			content_hash?: string | null;
 		};
 		/**
 		 * SessionMessageResponse
@@ -1401,6 +1464,8 @@ export interface components {
 			status: "uploaded";
 			/** File Key */
 			file_key: string;
+			/** Content Hash */
+			content_hash: string;
 		};
 		/** SettingsResponse */
 		SettingsResponse: {
@@ -2171,6 +2236,37 @@ export interface operations {
 				};
 				content: {
 					"application/json": components["schemas"]["SessionMessageResponse"][];
+				};
+			};
+			/** @description Validation Error */
+			422: {
+				headers: {
+					[name: string]: unknown;
+				};
+				content: {
+					"application/json": components["schemas"]["HTTPValidationError"];
+				};
+			};
+		};
+	};
+	extract_session_memories_api_sessions__local_session_id__extract_post: {
+		parameters: {
+			query?: never;
+			header?: never;
+			path: {
+				local_session_id: string;
+			};
+			cookie?: never;
+		};
+		requestBody?: never;
+		responses: {
+			/** @description Successful Response */
+			200: {
+				headers: {
+					[name: string]: unknown;
+				};
+				content: {
+					"application/json": components["schemas"]["SessionExtractResponse"];
 				};
 			};
 			/** @description Validation Error */

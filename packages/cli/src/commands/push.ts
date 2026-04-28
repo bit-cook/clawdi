@@ -1,14 +1,30 @@
+import { homedir } from "node:os";
+import { resolve as resolvePath } from "node:path";
 import * as p from "@clack/prompts";
 import chalk from "chalk";
-import type { RawSession, RawSkill } from "../adapters/base";
+import type { AgentAdapter, RawSession, RawSkill } from "../adapters/base";
 import { adapterRegistry } from "../adapters/registry";
 import { ApiClient, ApiError, unwrap } from "../lib/api-client";
 import { isLoggedIn } from "../lib/config";
 import { errMessage } from "../lib/errors";
+import { sha256Hex } from "../lib/hash";
 import { askMulti, askYesNo, parseModules } from "../lib/prompts";
-import { getEnvIdByAgent, selectAdapter } from "../lib/select-adapter";
-import { readModuleState, writeModuleState } from "../lib/state";
+import { adapterForType, getEnvIdByAgent, resolveTargetAgentTypes } from "../lib/select-adapter";
+import {
+	cacheKey,
+	readSessionsLock,
+	type SessionsLock,
+	writeSessionsLock,
+} from "../lib/sessions-lock";
+import {
+	computeSkillFolderHash,
+	readSkillsLock,
+	type SkillsLock,
+	writeSkillsLock,
+} from "../lib/skills-lock";
+import { type ModuleState, readModuleState, writeModuleState } from "../lib/state";
 import { tarSkillDir } from "../lib/tar";
+import { isInteractive } from "../lib/tty";
 
 const RESETUP_HINT =
 	"This machine's environment is no longer registered. Run `clawdi setup` again.";
@@ -18,14 +34,28 @@ const UP_MODULES = [
 	{ value: "skills", label: "Skills", hint: "skill directories as tar.gz" },
 ];
 
-export async function push(opts: {
+interface PushOpts {
 	modules?: string;
-	since?: string;
 	project?: string;
+	excludeProject?: string[];
 	all?: boolean;
+	allAgents?: boolean;
 	dryRun?: boolean;
 	agent?: string;
-}) {
+	yes?: boolean;
+}
+
+interface AgentPushResult {
+	sessionsCacheSkipped: number;
+	sessionsCreated: number;
+	sessionsUpdated: number;
+	sessionsUnchanged: number;
+	contentUploaded: number;
+	skillsCacheSkipped: number;
+	skillsPushed: number;
+}
+
+export async function push(opts: PushOpts) {
 	p.intro(chalk.bold("clawdi push"));
 
 	if (!opts.dryRun && !isLoggedIn()) {
@@ -35,53 +65,20 @@ export async function push(opts: {
 		return;
 	}
 
-	const adapter = await selectAdapter(opts.agent);
-	if (!adapter) {
+	if (opts.project && opts.excludeProject && opts.excludeProject.length > 0) {
+		p.log.error(
+			"--project and --exclude-project cannot be combined (--project is positive selection, --exclude-project is subtractive).",
+		);
 		p.outro(chalk.red("Aborted."));
 		process.exitCode = 1;
 		return;
 	}
 
-	const envId = getEnvIdByAgent(adapter.agentType);
-	if (!opts.dryRun && !envId) {
-		p.log.error("No environment registered. Run `clawdi setup` first.");
+	const targetTypes = await resolveTargetAgentTypes(opts.agent, !!opts.allAgents);
+	if (targetTypes.length === 0) {
 		p.outro(chalk.red("Aborted."));
 		process.exitCode = 1;
 		return;
-	}
-
-	// Probe the cached env_id before doing any local work. The CLI keeps a
-	// per-agent file under ~/.clawdi/environments/, but the corresponding row
-	// can disappear server-side (account switch, prod reset, env teardown).
-	// Catching that here means the user runs `clawdi setup` once and is back
-	// in business — instead of pushing 60 sessions that all show up as
-	// "Unknown" in the dashboard.
-	if (!opts.dryRun && envId) {
-		const probe = new ApiClient();
-		try {
-			const res = await probe.GET("/api/environments/{environment_id}", {
-				params: { path: { environment_id: envId } },
-			});
-			if (res.error || !res.data) {
-				const status = res.response?.status ?? 0;
-				if (status === 404) {
-					p.log.error(RESETUP_HINT);
-					p.outro(chalk.red("Aborted."));
-					process.exitCode = 1;
-					return;
-				}
-				// Anything else (401, network, 5xx) — let the actual upload bubble
-				// up the proper error; don't double-report here.
-			}
-		} catch (e) {
-			if (e instanceof ApiError && e.status === 404) {
-				p.log.error(RESETUP_HINT);
-				p.outro(chalk.red("Aborted."));
-				process.exitCode = 1;
-				return;
-			}
-			// Same reasoning as above — fall through and let upload surface it.
-		}
 	}
 
 	let modules: string[];
@@ -102,36 +99,155 @@ export async function push(opts: {
 		return;
 	}
 
-	p.log.info(`Agent:   ${adapterRegistry[adapter.agentType].displayName}`);
-	p.log.info(`Modules: ${modules.join(", ")}`);
+	if (targetTypes.length > 1) {
+		p.log.info(`Targets: ${targetTypes.map((t) => adapterRegistry[t].displayName).join(", ")}`);
+	}
 
-	// 2. Scan data
 	const moduleState = readModuleState();
-	const sinceSource: "flag" | "state" | "none" = opts.since
-		? "flag"
-		: moduleState.sessions?.lastActivityAt
-			? "state"
-			: "none";
-	const since = opts.since
-		? new Date(opts.since)
-		: moduleState.sessions?.lastActivityAt
-			? new Date(moduleState.sessions.lastActivityAt)
-			: undefined;
+	const sessionsLock = readSessionsLock();
+	const skillsLock = readSkillsLock();
+	const totals = {
+		cacheSkipped: 0,
+		created: 0,
+		updated: 0,
+		unchanged: 0,
+		content: 0,
+		skillsCacheSkipped: 0,
+		skills: 0,
+	};
+	let aborted = false;
+
+	for (const agentType of targetTypes) {
+		const adapter = adapterForType(agentType);
+		if (!adapter) continue;
+		if (targetTypes.length > 1) {
+			p.log.step(chalk.bold(`▶ ${adapterRegistry[agentType].displayName}`));
+		}
+		const result = await pushOneAgent(
+			adapter,
+			modules,
+			opts,
+			moduleState,
+			sessionsLock,
+			skillsLock,
+		);
+		if (result === "aborted") {
+			aborted = true;
+			break;
+		}
+		if (result === "skipped") continue;
+		totals.cacheSkipped += result.sessionsCacheSkipped;
+		totals.created += result.sessionsCreated;
+		totals.updated += result.sessionsUpdated;
+		totals.unchanged += result.sessionsUnchanged;
+		totals.content += result.contentUploaded;
+		totals.skillsCacheSkipped += result.skillsCacheSkipped;
+		totals.skills += result.skillsPushed;
+	}
+
+	if (!opts.dryRun) {
+		writeModuleState(moduleState);
+		// Persist content-hash caches once per push command, even if the
+		// loop aborted partway — entries we mutated for successful agents
+		// are still valid and would otherwise be lost on the next push.
+		writeSessionsLock(sessionsLock);
+		writeSkillsLock(skillsLock);
+	}
+
+	if (aborted) {
+		p.outro(chalk.red("Aborted."));
+		process.exitCode = 1;
+		return;
+	}
+
+	if (opts.dryRun) {
+		p.outro(chalk.gray("Dry run complete."));
+		return;
+	}
+
+	const parts: string[] = [];
+	if (modules.includes("sessions")) {
+		// Merge `cacheSkipped` into `unchanged` for display — they mean the
+		// same thing to the user ("this session didn't need any work"). The
+		// distinction (client cache hit vs. server hash match) is purely an
+		// internal perf metric and only confuses non-technical users.
+		const unchangedTotal = totals.cacheSkipped + totals.unchanged;
+		parts.push(`${totals.created} new, ${totals.updated} updated, ${unchangedTotal} unchanged`);
+		parts.push(`${totals.content} content upload${totals.content === 1 ? "" : "s"}`);
+	}
+	if (modules.includes("skills")) {
+		const skillsLabel =
+			totals.skillsCacheSkipped > 0
+				? `${totals.skills} skill${totals.skills === 1 ? "" : "s"} uploaded, ${totals.skillsCacheSkipped} already in sync`
+				: `${totals.skills} skill${totals.skills === 1 ? "" : "s"}`;
+		parts.push(skillsLabel);
+	}
+	parts.push(`across ${targetTypes.length} agent${targetTypes.length === 1 ? "" : "s"}`);
+	p.outro(chalk.green(`✓ Push complete — ${parts.join(", ")}`));
+}
+
+async function pushOneAgent(
+	adapter: AgentAdapter,
+	modules: string[],
+	opts: PushOpts,
+	moduleState: ModuleState,
+	sessionsLock: SessionsLock,
+	skillsLock: SkillsLock,
+): Promise<AgentPushResult | "aborted" | "skipped"> {
+	const agentType = adapter.agentType;
+	const envId = getEnvIdByAgent(agentType);
+
+	if (!opts.dryRun && !envId) {
+		p.log.error(
+			`No environment registered for ${adapterRegistry[agentType].displayName}. Run \`clawdi setup\` first.`,
+		);
+		return "aborted";
+	}
+
+	// Probe the cached env_id before doing any local work. The CLI keeps a
+	// per-agent file under ~/.clawdi/environments/, but the corresponding row
+	// can disappear server-side (account switch, prod reset, env teardown).
+	// Catching that here means the user runs `clawdi setup` once and is back
+	// in business — instead of pushing 60 sessions that all show up as
+	// "Unknown" in the dashboard.
+	if (!opts.dryRun && envId) {
+		const probe = new ApiClient();
+		try {
+			const res = await probe.GET("/api/environments/{environment_id}", {
+				params: { path: { environment_id: envId } },
+			});
+			if (res.error || !res.data) {
+				const status = res.response?.status ?? 0;
+				if (status === 404) {
+					p.log.error(RESETUP_HINT);
+					return "aborted";
+				}
+				// Anything else (401, network, 5xx) — let the actual upload bubble
+				// up the proper error; don't double-report here.
+			}
+		} catch (e) {
+			if (e instanceof ApiError && e.status === 404) {
+				p.log.error(RESETUP_HINT);
+				return "aborted";
+			}
+			// Same reasoning as above — fall through and let upload surface it.
+		}
+	}
+
+	// Project filter: explicit --all wins, then explicit --project, else cwd.
+	const usedCwdDefault = !opts.all && !opts.project;
 	const projectFilter = opts.all ? undefined : (opts.project ?? process.cwd());
+
+	const excludeSet = new Set<string>(
+		(opts.excludeProject ?? []).map((path) => normalizeProject(path)),
+	);
 
 	if (modules.includes("sessions")) {
 		const scope = projectFilter ? `project ${projectFilter}` : "all projects";
-		const sinceLabel = since
-			? `since ${since.toISOString()}${sinceSource === "state" ? " (from last push)" : ""}`
-			: "no since cutoff";
-		p.log.info(chalk.gray(`Scanning ${scope}, ${sinceLabel}`));
+		p.log.info(chalk.gray(`Scanning ${scope}`));
 	}
 
-	if (
-		adapter.agentType === "hermes" &&
-		modules.includes("sessions") &&
-		projectFilter !== undefined
-	) {
+	if (agentType === "hermes" && modules.includes("sessions") && projectFilter !== undefined) {
 		p.log.warn("Hermes does not support project filtering; pushing all sessions.");
 		p.log.info("Use --all to suppress this notice.");
 	}
@@ -142,7 +258,7 @@ export async function push(opts: {
 	const scanSpinner = p.spinner();
 	scanSpinner.start("Scanning local data...");
 	if (modules.includes("sessions")) {
-		sessions = await adapter.collectSessions(since, projectFilter);
+		sessions = await adapter.collectSessions({ projectFilter });
 	}
 	if (modules.includes("skills")) {
 		skills = await adapter.collectSkills();
@@ -151,15 +267,78 @@ export async function push(opts: {
 		`Scanned ${sessions.length} session${sessions.length === 1 ? "" : "s"}, ${skills.length} skill${skills.length === 1 ? "" : "s"}`,
 	);
 
-	// 3. Summary
-	if (modules.includes("sessions")) {
-		p.log.message(chalk.gray(`Sessions: ${sessions.length} to upload`));
-		if (sessions.length === 0 && projectFilter) {
+	// Fingerprint each session's content. The server's batch endpoint
+	// compares this against the stored `content_hash` to decide whether
+	// the body needs reupload, so we hash exactly the bytes we'd send.
+	for (const s of sessions) {
+		s.contentHash = sha256Hex(JSON.stringify(s.messages));
+	}
+
+	// Apply --exclude-project after scan. Exact-equality match on normalized
+	// absolute paths — `~/work` does NOT exclude `~/work/foo` (users say what
+	// they mean; prefix-match would silently drop sibling repos).
+	if (excludeSet.size > 0 && sessions.length > 0) {
+		const before = sessions.length;
+		const matchedExcludes = new Set<string>();
+		sessions = sessions.filter((s) => {
+			if (!s.projectPath) return true;
+			const normalized = normalizeProject(s.projectPath);
+			if (excludeSet.has(normalized)) {
+				matchedExcludes.add(normalized);
+				return false;
+			}
+			return true;
+		});
+		const removed = before - sessions.length;
+		if (removed > 0) {
 			p.log.info(
 				chalk.gray(
-					"No sessions matched. Try --all to scan every project, or --since <date> to override the last-push cutoff.",
+					`Excluded ${removed} session${removed === 1 ? "" : "s"} from ${matchedExcludes.size} project${matchedExcludes.size === 1 ? "" : "s"}`,
 				),
 			);
+		}
+		for (const requested of excludeSet) {
+			if (!matchedExcludes.has(requested)) {
+				p.log.warn(`--exclude-project ${requested} did not match any local sessions; ignoring`);
+			}
+		}
+	}
+
+	// Filter against the sessions-lock cache: any session whose hash matches
+	// the stored value can be skipped — the server already has it. This is
+	// the per-entity diff that replaces the old global mtime cursor; scope
+	// filters can't pollute it because each session has its own entry.
+	let sessionsCacheSkipped = 0;
+	if (modules.includes("sessions")) {
+		const before = sessions.length;
+		sessions = sessions.filter((s) => {
+			const cached = sessionsLock.sessions[cacheKey(agentType, s.localSessionId)];
+			return cached?.hash !== s.contentHash;
+		});
+		sessionsCacheSkipped = before - sessions.length;
+	}
+
+	if (modules.includes("sessions")) {
+		const tail = sessionsCacheSkipped > 0 ? ` (${sessionsCacheSkipped} already in sync)` : "";
+		p.log.message(chalk.gray(`Sessions: ${sessions.length} to upload${tail}`));
+		if (sessions.length === 0 && sessionsCacheSkipped === 0) {
+			// Nothing scanned at all — guide first-run cwd-default users.
+			const isFirstRun = !Object.keys(sessionsLock.sessions).some((k) =>
+				k.startsWith(`${agentType}:`),
+			);
+			if (usedCwdDefault && isFirstRun && !isInteractive()) {
+				p.log.info(
+					chalk.gray(
+						`No sessions matched in ${process.cwd()}. This looks like a first run — re-run with --all to scan every project, or pass --project <abs-path> if your sessions live elsewhere.`,
+					),
+				);
+			} else if (projectFilter) {
+				p.log.info(
+					chalk.gray(
+						"No sessions matched. Try --all to scan every project, or pass --project <abs-path> for a different scope.",
+					),
+				);
+			}
 		}
 	}
 	if (modules.includes("skills")) {
@@ -167,34 +346,68 @@ export async function push(opts: {
 	}
 
 	if (sessions.length === 0 && skills.length === 0) {
-		p.outro(chalk.gray("Nothing to push."));
-		return;
+		if (sessionsCacheSkipped > 0) {
+			// Cache covered everything. Surface the count to the top-level
+			// totals so the user sees a non-zero "skipped (cache)" number.
+			return {
+				sessionsCacheSkipped,
+				sessionsCreated: 0,
+				sessionsUpdated: 0,
+				sessionsUnchanged: 0,
+				contentUploaded: 0,
+				skillsCacheSkipped: 0,
+				skillsPushed: 0,
+			};
+		}
+		if (excludeSet.size > 0 && modules.includes("sessions")) {
+			p.log.message(chalk.gray("Nothing left to push after exclusions."));
+		}
+		return "skipped";
 	}
 
-	// 4. Confirm
 	if (opts.dryRun) {
-		p.outro(chalk.gray("Dry run complete."));
-		return;
-	}
-	const ok = await askYesNo("Proceed with upload?");
-	if (!ok) {
-		p.outro(chalk.gray("Cancelled."));
-		return;
+		// Dry-run reports the local scan size — we can't know which sessions
+		// the server already has without actually hitting the batch endpoint.
+		return {
+			sessionsCacheSkipped,
+			sessionsCreated: sessions.length,
+			sessionsUpdated: 0,
+			sessionsUnchanged: 0,
+			contentUploaded: sessions.length,
+			skillsCacheSkipped: 0,
+			skillsPushed: skills.length,
+		};
 	}
 
-	// 5. Execute — `envId` was guarded against null up-front, but the narrowing
-	// is gone by now. Re-check so TS can forward it into the batch body.
+	// `--yes` skips the confirmation. `askYesNo` already returns true in
+	// non-interactive contexts (CI / agent), so explicit `--yes` is mostly
+	// a no-op in those, but keeps the skill's command line self-documenting.
+	if (!opts.yes) {
+		const ok = await askYesNo("Proceed with upload?");
+		if (!ok) {
+			p.log.info(chalk.gray("Cancelled."));
+			return "skipped";
+		}
+	}
+
 	if (!envId) {
 		p.log.error("Environment id missing — rerun `clawdi setup`.");
-		return;
+		return "aborted";
 	}
+
 	const api = new ApiClient();
+	let sessionsCreated = 0;
+	let sessionsUpdated = 0;
+	let sessionsUnchanged = 0;
+	let contentUploaded = 0;
+	let skillsPushed = 0;
 
 	if (sessions.length > 0) {
 		const sessionSpinner = p.spinner();
 		sessionSpinner.start(
-			`Uploading ${sessions.length} session${sessions.length === 1 ? "" : "s"}...`,
+			`Uploading metadata for ${sessions.length} session${sessions.length === 1 ? "" : "s"}...`,
 		);
+		let needsContent: Set<string>;
 		try {
 			const result = unwrap(
 				await api.POST("/api/sessions/batch", {
@@ -214,63 +427,100 @@ export async function push(opts: {
 							models_used: s.modelsUsed,
 							summary: s.summary,
 							status: "completed",
+							content_hash: s.contentHash ?? null,
 						})),
 					},
 				}),
 			);
-			sessionSpinner.stop(`Pushed ${result.synced} session${result.synced === 1 ? "" : "s"}`);
-
-			if (result.synced > 0) {
-				const contentSpinner = p.spinner();
-				contentSpinner.start("Uploading session content...");
-				let uploaded = 0;
-				for (const s of sessions) {
-					if (s.messages.length === 0) continue;
-					try {
-						const content = Buffer.from(JSON.stringify(s.messages), "utf-8");
-						await api.uploadSessionContent(s.localSessionId, content, `${s.localSessionId}.json`);
-						uploaded++;
-						contentSpinner.message(`Uploading session content (${uploaded}/${result.synced})...`);
-					} catch (e) {
-						// Content upload is best-effort — the session header was
-						// already committed in the batch POST above. Surface the
-						// reason so misconfigured file stores don't appear to
-						// succeed silently.
-						p.log.warn(`Content upload skipped for ${s.localSessionId}: ${errMessage(e)}`);
-					}
-				}
-				contentSpinner.stop(`Uploaded ${uploaded} session content${uploaded === 1 ? "" : "s"}`);
-			}
+			needsContent = new Set(result.needs_content);
+			sessionsCreated = result.created;
+			sessionsUpdated = result.updated;
+			sessionsUnchanged = result.unchanged;
+			sessionSpinner.stop(
+				`Metadata: ${sessionsCreated} new, ${sessionsUpdated} updated, ${sessionsUnchanged} unchanged`,
+			);
 		} catch (e) {
-			// Stop the spinner with a plain "failed" message — handleError
-			// will render the final red error box, so we avoid double-red.
-			sessionSpinner.stop("Session upload failed.");
+			sessionSpinner.stop("Session metadata upload failed.");
 			// Translate the backend's "unknown_environment" 400 into the same
 			// re-setup hint the up-front probe uses. The probe catches the
 			// common case; this catches a race where the env was deleted
 			// between probe and batch.
 			if (e instanceof ApiError && e.status === 400 && e.body.includes("unknown_environment")) {
 				p.log.error(RESETUP_HINT);
-				p.outro(chalk.red("Aborted."));
-				process.exitCode = 1;
-				return;
+				return "aborted";
 			}
 			throw e;
 		}
-		moduleState.sessions = { lastActivityAt: new Date().toISOString() };
+
+		// Track which uploads actually landed bytes on the server. Caching
+		// a hash for a session whose upload threw would be a silent footgun:
+		// next push sees cache hit → skips → server still has metadata
+		// without file_key → forever broken until cache is wiped.
+		const uploadedIds = new Set<string>();
+		if (needsContent.size > 0) {
+			const contentSpinner = p.spinner();
+			contentSpinner.start(
+				`Uploading content for ${needsContent.size} session${needsContent.size === 1 ? "" : "s"}...`,
+			);
+			for (const s of sessions) {
+				if (!needsContent.has(s.localSessionId)) continue;
+				if (s.messages.length === 0) continue;
+				try {
+					const content = Buffer.from(JSON.stringify(s.messages), "utf-8");
+					await api.uploadSessionContent(s.localSessionId, content, `${s.localSessionId}.json`);
+					uploadedIds.add(s.localSessionId);
+					contentUploaded++;
+					contentSpinner.message(`Uploading content (${contentUploaded}/${needsContent.size})...`);
+				} catch (e) {
+					// Content upload is best-effort — the metadata row was
+					// already committed in the batch POST above. Surface the
+					// reason so misconfigured file stores don't appear to
+					// succeed silently.
+					p.log.warn(`Content upload skipped for ${s.localSessionId}: ${errMessage(e)}`);
+				}
+			}
+			contentSpinner.stop(
+				`Uploaded ${contentUploaded} content blob${contentUploaded === 1 ? "" : "s"}`,
+			);
+		}
+
+		// Update the per-session lock for sessions that are genuinely in
+		// sync with the server now: either the server already had matching
+		// content (not in `needs_content`), or we just delivered the bytes
+		// (id in `uploadedIds`). Sessions whose upload failed stay un-cached
+		// so the next push retries.
+		for (const s of sessions) {
+			if (!s.contentHash) continue;
+			const id = s.localSessionId;
+			if (needsContent.has(id) && !uploadedIds.has(id)) continue;
+			sessionsLock.sessions[cacheKey(agentType, id)] = { hash: s.contentHash };
+		}
+		moduleState[`sessions:${agentType}`] = { lastActivityAt: new Date().toISOString() };
 	}
 
+	let skillsCacheSkipped = 0;
 	if (skills.length > 0) {
 		const skillSpinner = p.spinner();
-		skillSpinner.start(`Uploading ${skills.length} skill${skills.length === 1 ? "" : "s"}...`);
+		skillSpinner.start(`Hashing ${skills.length} skill${skills.length === 1 ? "" : "s"}...`);
 		let pushed = 0;
 		const skipped: { key: string; reason: string }[] = [];
 		try {
 			for (const skill of skills) {
+				// Compute the file-tree hash first. Cheap (no tar build) — if
+				// it matches the cache, we skip the whole upload path.
+				const computedHash = await computeSkillFolderHash(skill.directoryPath);
+				if (skillsLock.skills[skill.skillKey]?.hash === computedHash) {
+					skillsCacheSkipped++;
+					skillSpinner.message(
+						`Hashing skills (${pushed + skipped.length + skillsCacheSkipped}/${skills.length})...`,
+					);
+					continue;
+				}
 				const tarBytes = await tarSkillDir(skill.directoryPath);
 				try {
-					await api.uploadSkill(skill.skillKey, tarBytes, `${skill.skillKey}.tar.gz`);
+					await api.uploadSkill(skill.skillKey, tarBytes, `${skill.skillKey}.tar.gz`, computedHash);
 					pushed++;
+					skillsLock.skills[skill.skillKey] = { hash: computedHash };
 				} catch (e) {
 					// 413 = upstream (Cloudflare / nginx) refused the body. Almost
 					// always a single oversized skill; skip it and keep going so
@@ -291,16 +541,22 @@ export async function push(opts: {
 					const mb = (tarBytes.length / 1024 / 1024).toFixed(1);
 					skipped.push({ key: skill.skillKey, reason: `${mb} MB exceeds upload limit` });
 				}
-				skillSpinner.message(`Uploading skills (${pushed + skipped.length}/${skills.length})...`);
+				skillSpinner.message(
+					`Uploading skills (${pushed + skipped.length + skillsCacheSkipped}/${skills.length})...`,
+				);
 			}
-			const parts = [`Pushed ${pushed} skill${pushed === 1 ? "" : "s"}`];
+			const summary = [`Pushed ${pushed} skill${pushed === 1 ? "" : "s"}`];
+			if (skillsCacheSkipped > 0) {
+				summary.push(`${skillsCacheSkipped} already in sync`);
+			}
 			if (skipped.length > 0) {
-				parts.push(`skipped ${skipped.length} (too large)`);
+				summary.push(`skipped ${skipped.length} (too large)`);
 			}
-			skillSpinner.stop(parts.join(", "));
+			skillSpinner.stop(summary.join(", "));
 			for (const s of skipped) {
 				p.log.warn(`Skipped ${s.key} — ${s.reason}`);
 			}
+			skillsPushed = pushed;
 		} catch (e) {
 			skillSpinner.stop(`Failed after ${pushed} skill${pushed === 1 ? "" : "s"}.`);
 			throw e;
@@ -308,6 +564,23 @@ export async function push(opts: {
 		moduleState.skills = { lastActivityAt: new Date().toISOString() };
 	}
 
-	writeModuleState(moduleState);
-	p.outro(chalk.green("✓ Push complete"));
+	return {
+		sessionsCacheSkipped,
+		sessionsCreated,
+		sessionsUpdated,
+		sessionsUnchanged,
+		contentUploaded,
+		skillsCacheSkipped,
+		skillsPushed,
+	};
+}
+
+function normalizeProject(input: string): string {
+	// Expand `~` ourselves — `path.resolve` doesn't do tilde expansion, so a
+	// shell-less caller (e.g. an agent invoking the CLI directly) that passes
+	// `~/scratch` would otherwise get `<cwd>/~/scratch`, which never matches.
+	let expanded = input;
+	if (expanded === "~") expanded = homedir();
+	else if (expanded.startsWith("~/")) expanded = `${homedir()}${expanded.slice(1)}`;
+	return resolvePath(expanded);
 }
