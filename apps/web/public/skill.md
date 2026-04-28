@@ -100,9 +100,11 @@ Render something like (use the user's actual paths and counts, not these numbers
 > - `~/scratch` — 3 sessions
 > - …and 3 more projects
 >
-> Want me to upload all of them to your Clawdi Cloud dashboard? Or are there any projects you'd rather skip — anything client-confidential, NDA work, etc.? You can name a project even if it's not in the list above.
+> Want me to upload all of them to your Clawdi Cloud dashboard? Or are there any projects you'd rather skip — anything client-confidential, NDA work, etc.?
+>
+> **Reply `y` to upload all, or name any projects to skip** (works for projects not in the list above too).
 
-The closing line about "even if it's not in the list above" is important: the cap might hide a low-session-count NDA repo the user actually cares about excluding. Accept any project path they name, listed or not.
+The closing line about "not in the list above too" is important: the cap might hide a low-session-count NDA repo the user actually cares about excluding. Accept any project path they name, listed or not.
 
 ### Translate the answer to a push command
 
@@ -110,12 +112,12 @@ The user references real project names from the summary you just showed them. Ma
 
 | User says | Command |
 | --- | --- |
-| "all" / "go ahead" / "upload everything" | `clawdi push --modules sessions --all-agents --all --yes` |
+| "y" / "yes" / "ok" / "all" | `clawdi push --modules sessions --all-agents --all --yes` |
 | "skip client-acme" | `clawdi push --modules sessions --all-agents --all --exclude-project ~/work/client-acme --yes` |
 | "skip client-acme and scratch" | `clawdi push --modules sessions --all-agents --all --exclude-project ~/work/client-acme --exclude-project ~/scratch --yes` |
 | "only Claude Code" | `clawdi push --modules sessions --agent claude_code --all --yes` |
 | "only ~/work/clawdi-cloud" | `clawdi push --modules sessions --all-agents --project ~/work/clawdi-cloud --yes` |
-| "skip entirely" / "not now" | (skip — tell them *"Run `clawdi push --modules sessions --all-agents --all` whenever you want to sync."* and continue) |
+| "n" / "no" / "skip" / "not now" | (skip — tell them *"Run `clawdi push --modules sessions --all-agents --all` whenever you want to sync."* and continue) |
 
 Resolve `~` to an absolute path before passing to the CLI.
 
