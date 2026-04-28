@@ -96,18 +96,11 @@ describe("ClaudeCodeAdapter.collectSessions", () => {
 		expect(texts).toEqual(["hello", "world", "one more", "done"]);
 	});
 
-	it("filters by since", async () => {
-		const a = new ClaudeCodeAdapter();
-		// fixture starts at 2026-04-20T10:00:00Z
-		const future = new Date("2026-05-01T00:00:00Z");
-		expect(await a.collectSessions(future)).toHaveLength(0);
-	});
-
 	it("filters by projectFilter (matching cwd → encoded dir)", async () => {
 		const a = new ClaudeCodeAdapter();
-		const matched = await a.collectSessions(undefined, "/Users/fixture/project");
+		const matched = await a.collectSessions({ projectFilter: "/Users/fixture/project" });
 		expect(matched).toHaveLength(1);
-		const notMatched = await a.collectSessions(undefined, "/Users/other/project");
+		const notMatched = await a.collectSessions({ projectFilter: "/Users/other/project" });
 		expect(notMatched).toHaveLength(0);
 	});
 

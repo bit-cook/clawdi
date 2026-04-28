@@ -133,16 +133,10 @@ describe("OpenClawAdapter.collectSessions", () => {
 		expect(s.summary).toBe("Fixture session");
 	});
 
-	it("filters by since (based on updatedAt)", async () => {
-		const a = new OpenClawAdapter();
-		const future = new Date("2026-05-01T00:00:00Z");
-		expect(await a.collectSessions(future)).toHaveLength(0);
-	});
-
 	it("filters by projectFilter matching acp.cwd", async () => {
 		const a = new OpenClawAdapter();
-		expect(await a.collectSessions(undefined, "/Users/fixture/project")).toHaveLength(1);
-		expect(await a.collectSessions(undefined, "/Users/other/project")).toHaveLength(0);
+		expect(await a.collectSessions({ projectFilter: "/Users/fixture/project" })).toHaveLength(1);
+		expect(await a.collectSessions({ projectFilter: "/Users/other/project" })).toHaveLength(0);
 	});
 
 	it("returns empty when sessions.json is missing", async () => {

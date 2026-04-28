@@ -71,7 +71,7 @@ content
 		]);
 
 		try {
-			await pull({ agent: "hermes" });
+			await pull({ agent: "hermes", modules: "skills" });
 		} finally {
 			restore();
 		}
@@ -96,7 +96,7 @@ content
 			},
 		]);
 		try {
-			await pull({ agent: "hermes", dryRun: true });
+			await pull({ agent: "hermes", modules: "skills", dryRun: true });
 		} finally {
 			restore();
 		}
@@ -117,7 +117,7 @@ content
 			{ method: "GET", path: "/api/skills", response: () => jsonResponse({ items: [] }) },
 		]);
 		try {
-			await pull({ agent: "hermes" });
+			await pull({ agent: "hermes", modules: "skills" });
 		} finally {
 			restore();
 		}
@@ -129,7 +129,7 @@ content
 		rmSync(join(tmpHome, ".clawdi", "auth.json"));
 		const { captured, restore } = mockFetch([]);
 		try {
-			await pull({ agent: "hermes" });
+			await pull({ agent: "hermes", modules: "skills" });
 		} finally {
 			restore();
 		}
@@ -162,7 +162,7 @@ description: new
 			},
 		]);
 		try {
-			await pull({ agent: "claude_code" });
+			await pull({ agent: "claude_code", modules: "skills" });
 		} finally {
 			restore();
 		}
@@ -194,7 +194,7 @@ description: new
 			},
 		]);
 		try {
-			await pull({ agent: "codex" });
+			await pull({ agent: "codex", modules: "skills" });
 		} finally {
 			restore();
 		}
@@ -226,7 +226,7 @@ description: new
 			},
 		]);
 		try {
-			await pull({ agent: "openclaw" });
+			await pull({ agent: "openclaw", modules: "skills" });
 		} finally {
 			restore();
 		}

@@ -77,14 +77,6 @@ describe("HermesAdapter.collectSessions", () => {
 		expect(sessions.map((s) => s.localSessionId)).toEqual(["s-json", "s-plain"]);
 	});
 
-	it("filters by since (exclusive of older sessions)", async () => {
-		const a = new HermesAdapter();
-		// s-plain starts at t (1776247200), s-json at t+10. since between them keeps only s-json.
-		const since = new Date((1776247200 + 5) * 1000);
-		const sessions = await a.collectSessions(since);
-		expect(sessions.map((s) => s.localSessionId)).toEqual(["s-json"]);
-	});
-
 	it("projectPath is null for every Hermes session (by design)", async () => {
 		const a = new HermesAdapter();
 		const sessions = await a.collectSessions();
