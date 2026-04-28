@@ -66,8 +66,8 @@ describe("CodexAdapter.collectSessions", () => {
 
 	it("filters by projectFilter", async () => {
 		const a = new CodexAdapter();
-		expect(await a.collectSessions(undefined, "/Users/fixture/project")).toHaveLength(1);
-		expect(await a.collectSessions(undefined, "/Users/other/project")).toHaveLength(0);
+		expect(await a.collectSessions({ projectFilter: "/Users/fixture/project" })).toHaveLength(1);
+		expect(await a.collectSessions({ projectFilter: "/Users/other/project" })).toHaveLength(0);
 	});
 
 	it("returns empty when sessions dir is missing", async () => {

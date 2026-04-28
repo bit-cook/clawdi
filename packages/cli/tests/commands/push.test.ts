@@ -62,7 +62,21 @@ describe("push — Hermes fixture", () => {
 		setup("hermes");
 		const { captured, restore } = mockFetch([
 			okEnvironmentProbe(),
-			{ method: "POST", path: "/api/sessions/batch", response: () => jsonResponse({ synced: 2 }) },
+			{
+				method: "POST",
+				path: "/api/sessions/batch",
+				// Round 2 (commit 4e013dc) replaced `{ synced: int }` with this
+				// 4-field response. The CLI reads `needs_content` to decide
+				// which sessions still need a content upload after batch — so
+				// this mock must list both ids or no follow-up uploads happen.
+				response: () =>
+					jsonResponse({
+						created: 2,
+						updated: 0,
+						unchanged: 0,
+						needs_content: ["s-json", "s-plain"],
+					}),
+			},
 			{ method: "POST", path: "/api/sessions/", response: () => jsonResponse({}) },
 		]);
 
@@ -87,9 +101,11 @@ describe("push — Hermes fixture", () => {
 		expect(uploads).toHaveLength(2);
 		for (const u of uploads) expect(u.isMultipart).toBe(true);
 
-		// state.json updated
+		// state.json updated. Round 1 (commit d8122d6) switched the cursor
+		// key from global `sessions` to per-agent `sessions:<agentType>` so
+		// pushing one agent doesn't advance another agent's cursor.
 		const state = JSON.parse(readFileSync(join(tmpHome, ".clawdi", "state.json"), "utf-8"));
-		expect(state.sessions.lastActivityAt).toBeDefined();
+		expect(state["sessions:hermes"]?.lastActivityAt).toBeDefined();
 	});
 
 	it("--dry-run makes zero fetch calls", async () => {
@@ -128,7 +144,17 @@ describe("push — Hermes fixture", () => {
 		writeFileSync(join(tmpHome, ".clawdi", "state.json"), "{ not valid json");
 		const { restore } = mockFetch([
 			okEnvironmentProbe(),
-			{ method: "POST", path: "/api/sessions/batch", response: () => jsonResponse({ synced: 2 }) },
+			{
+				method: "POST",
+				path: "/api/sessions/batch",
+				response: () =>
+					jsonResponse({
+						created: 2,
+						updated: 0,
+						unchanged: 0,
+						needs_content: ["s-json", "s-plain"],
+					}),
+			},
 			{ method: "POST", path: "/api/sessions/", response: () => jsonResponse({}) },
 		]);
 		try {
@@ -146,7 +172,11 @@ describe("push — Claude Code fixture", () => {
 		setup("claude-code");
 		const { captured, restore } = mockFetch([
 			okEnvironmentProbe(),
-			{ method: "POST", path: "/api/sessions/batch", response: () => jsonResponse({ synced: 1 }) },
+			{
+				method: "POST",
+				path: "/api/sessions/batch",
+				response: () => jsonResponse({ created: 1, updated: 0, unchanged: 0, needs_content: [] }),
+			},
 			{ method: "POST", path: "/api/sessions/", response: () => jsonResponse({}) },
 		]);
 		try {
@@ -171,7 +201,11 @@ describe("push — Codex fixture", () => {
 		setup("codex");
 		const { captured, restore } = mockFetch([
 			okEnvironmentProbe(),
-			{ method: "POST", path: "/api/sessions/batch", response: () => jsonResponse({ synced: 1 }) },
+			{
+				method: "POST",
+				path: "/api/sessions/batch",
+				response: () => jsonResponse({ created: 1, updated: 0, unchanged: 0, needs_content: [] }),
+			},
 			{ method: "POST", path: "/api/sessions/", response: () => jsonResponse({}) },
 		]);
 		try {
@@ -195,7 +229,11 @@ describe("push — OpenClaw fixture", () => {
 		setup("openclaw");
 		const { captured, restore } = mockFetch([
 			okEnvironmentProbe(),
-			{ method: "POST", path: "/api/sessions/batch", response: () => jsonResponse({ synced: 1 }) },
+			{
+				method: "POST",
+				path: "/api/sessions/batch",
+				response: () => jsonResponse({ created: 1, updated: 0, unchanged: 0, needs_content: [] }),
+			},
 			{ method: "POST", path: "/api/sessions/", response: () => jsonResponse({}) },
 		]);
 		try {
