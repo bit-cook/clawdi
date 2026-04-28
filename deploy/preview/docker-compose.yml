@@ -1,0 +1,184 @@
+name: clawdi-preview
+
+# Per-preview stack deployed by Coolify, fronted by Cloudflare Tunnel.
+# See deploy/preview/README.md for operator setup.
+#
+# Coolify substitutes per-deploy env vars (PUBLIC_API_URL, WEB_ORIGIN, etc.)
+# from the project's preview-environment-variables set. The bind mount
+# /var/clawdi-snapshots:/snapshots:ro must be approved once per resource in
+# the Coolify UI on first deploy.
+#
+# Coolify auto-injects COOLIFY_BRANCH on every service. The `clone` init
+# uses it to check out the matching branch (or PR head) into the `source`
+# volume; api + web mount the populated volume.
+
+services:
+  # One-shot init: clone the repo at COOLIFY_BRANCH into the `source` named
+  # volume on first boot. Subsequent boots see `.git` and exit immediately —
+  # so dev edits inside the containers (`docker compose exec api git pull`)
+  # are preserved across restarts.
+  clone:
+    image: alpine/git
+    # alpine/git's ENTRYPOINT is `git`, so we override to run a shell.
+    entrypoint: [""]
+    volumes:
+      - source:/repo
+    environment:
+      REPO_URL: ${REPO_URL}
+      REPO_REF: ${REPO_REF:-main}
+    command: >
+      sh -c '
+        if [ -d /repo/.git ]; then
+          echo "source already at $$(git -C /repo rev-parse --short HEAD) — leaving alone"
+          exit 0
+        fi
+        # Volume may be non-empty from a previous aborted run; clear it.
+        rm -rf /repo/* /repo/.[!.]* /repo/..?* 2>/dev/null || true
+        # Coolify v4 sets COOLIFY_CONTAINER_NAME=<svc>-<uuid>-pr-<N> for preview
+        # deploys. Detect that to fetch the PR head ref instead of the
+        # production-tracking branch.
+        PR_ID=$$(printf "%s" "$$COOLIFY_CONTAINER_NAME" | sed -nE "s/.*-pr-([0-9]+)$$/\\1/p")
+        if [ -n "$$PR_ID" ]; then
+          echo "PR-$$PR_ID detected — fetching pull request head"
+          git -C /repo init -q
+          git -C /repo remote add origin "$$REPO_URL"
+          git -C /repo fetch --depth 50 origin "refs/pull/$$PR_ID/head"
+          git -C /repo checkout FETCH_HEAD
+        else
+          git clone --depth 50 --branch "$$REPO_REF" "$$REPO_URL" /repo
+        fi
+      '
+    restart: "no"
+
+  postgres:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_DB: clawdi
+      POSTGRES_USER: clawdi
+      POSTGRES_PASSWORD: ${PG_PASSWORD:-preview_local}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U clawdi"]
+      interval: 5s
+      retries: 20
+
+  # One-shot init: extracts the snapshot tarball into the postgres + file
+  # store volumes on first boot, no-ops thereafter (idempotent via a marker
+  # table). Snapshots are scp'd into /var/clawdi-snapshots/ on the host by
+  # the operator; see deploy/snapshot/dump.sh for how they're produced.
+  # The script itself is read from the source volume (post-clone) so we
+  # don't need a host-side bind mount for it.
+  restore:
+    image: postgres:16-alpine
+    depends_on:
+      clone:
+        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
+    volumes:
+      - source:/source:ro
+      - /var/clawdi-snapshots:/snapshots:ro
+      - files:/data/files
+    environment:
+      DATABASE_URL: postgresql://clawdi:${PG_PASSWORD:-preview_local}@${SERVICE_NAME_POSTGRES:-postgres}:5432/clawdi
+      SNAPSHOT_PATH: ${SNAPSHOT_PATH:-/snapshots/latest.tar.gz}
+    command: ["sh", "/source/deploy/preview/restore.sh"]
+    restart: "no"
+
+  api:
+    image: python:3.12-slim
+    working_dir: /app/backend
+    depends_on:
+      restore:
+        condition: service_completed_successfully
+    volumes:
+      - source:/app
+      - api-venv:/app/backend/.venv
+      - uv-cache:/root/.cache/uv
+      - fastembed-cache:/root/.cache/fastembed
+      - files:/data/files
+    environment:
+      DATABASE_URL: postgresql+asyncpg://clawdi:${PG_PASSWORD:-preview_local}@${SERVICE_NAME_POSTGRES:-postgres}:5432/clawdi
+      ENVIRONMENT: preview
+      FILE_STORE_TYPE: local
+      FILE_STORE_LOCAL_PATH: /data/files
+      DEBUG: "false"
+      # PUBLIC_API_URL / WEB_ORIGIN / CORS_ORIGINS are derived from SERVICE_FQDN_*
+      # in the container's command at runtime — see below. (Compose-time
+      # ${SERVICE_FQDN_API} would resolve from the project .env which holds the
+      # production tracker's value, not the PR-specific one.)
+      ALLOWED_EMAIL_DOMAINS: ${ALLOWED_EMAIL_DOMAINS:-@example.com}
+      CLERK_PEM_PUBLIC_KEY: ${CLERK_PEM_PUBLIC_KEY}
+      VAULT_ENCRYPTION_KEY: ${VAULT_ENCRYPTION_KEY}
+      ENCRYPTION_KEY: ${ENCRYPTION_KEY}
+      COMPOSIO_API_KEY: ${COMPOSIO_API_KEY:-}
+      MEMORY_EMBEDDING_MODE: ${MEMORY_EMBEDDING_MODE:-local}
+      MEMORY_EMBEDDING_API_KEY: ${MEMORY_EMBEDDING_API_KEY:-}
+      MEMORY_EMBEDDING_BASE_URL: ${MEMORY_EMBEDDING_BASE_URL:-}
+      MEMORY_EMBEDDING_MODEL: ${MEMORY_EMBEDDING_MODEL:-text-embedding-3-small}
+    ports:
+      - "8000"
+    command: >
+      bash -c '
+        set -e
+        # Derive per-deploy URLs from SERVICE_FQDN_* (per-service runtime env)
+        export PUBLIC_API_URL="https://$$SERVICE_FQDN_API"
+        export WEB_ORIGIN="https://$$SERVICE_FQDN_WEB"
+        export CORS_ORIGINS="[\"https://$$SERVICE_FQDN_WEB\"]"
+        if ! command -v uv >/dev/null; then
+          pip install --quiet uv
+        fi
+        uv sync --frozen
+        uv run alembic upgrade head
+        exec uv run uvicorn app.main:app --host 0.0.0.0 --port 8000
+      '
+
+  web:
+    image: oven/bun:1
+    working_dir: /app/apps/web
+    depends_on:
+      clone:
+        condition: service_completed_successfully
+    volumes:
+      - source:/app
+      - web-node-modules:/app/node_modules
+      - web-app-node-modules:/app/apps/web/node_modules
+    environment:
+      # NEXT_PUBLIC_API_URL is derived in the command from SERVICE_FQDN_API
+      # (per-deploy value); it must be exported BEFORE `bun run build` since
+      # NEXT_PUBLIC_* env vars are baked into the JS bundle at build time.
+      NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY: ${NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY}
+      CLERK_SECRET_KEY: ${CLERK_SECRET_KEY}
+    ports:
+      - "3000"
+    command: >
+      bash -c '
+        set -e
+        export NEXT_PUBLIC_API_URL="https://$$SERVICE_FQDN_API"
+        cd /app
+        # --ignore-scripts skips the root lefthook postinstall which needs git
+        # (dev-only hook; not needed in containers).
+        bun install --frozen-lockfile --ignore-scripts
+        cd apps/web
+        # Production build (no HMR, no dev-mode WS — Cloudflare Tunnel proxies HTTP
+        # cleanly but the dev WebSocket /_next/webpack-hmr fails through it).
+        # First boot: ~2 min build. Subsequent restarts: skip build if BUILD_ID
+        # exists (the canonical "this is a real production build" marker). A
+        # bare `.next/` dir from a prior `next dev` run does NOT have BUILD_ID.
+        if [ ! -f .next/BUILD_ID ]; then
+          rm -rf .next
+          bun run build
+        fi
+        exec bun run start --hostname 0.0.0.0 --port 3000
+      '
+
+volumes:
+  source:
+  pgdata:
+  files:
+  api-venv:
+  uv-cache:
+  fastembed-cache:
+  web-node-modules:
+  web-app-node-modules:
