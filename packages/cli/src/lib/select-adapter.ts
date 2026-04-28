@@ -104,3 +104,39 @@ export async function selectAdapter(agentOpt?: string): Promise<AgentAdapter | n
 	);
 	return picked ? adapterForType(picked) : null;
 }
+
+/**
+ * Resolve a list of agent targets for commands that operate across multiple
+ * agents at once (`push --all-agents`, `sessions list --all-agents`).
+ *
+ * Returns the empty array when the caller should abort — same convention as
+ * `selectAdapter`. The caller has already printed an explanatory message in
+ * the failure cases this function handles.
+ *
+ *   --all-agents          → every type with a file under ~/.clawdi/environments/
+ *   --agent <type>        → exactly that one (validated)
+ *   neither, single match → the single registered/detected adapter (via selectAdapter)
+ *   neither, ambiguous    → null in non-interactive contexts; prompt otherwise
+ */
+export async function resolveTargetAgentTypes(
+	agentOpt: string | undefined,
+	allAgents: boolean,
+): Promise<AgentType[]> {
+	if (agentOpt && allAgents) {
+		console.log(chalk.red("Pass either --agent or --all-agents, not both."));
+		return [];
+	}
+
+	if (allAgents) {
+		const registered = listRegisteredAgentTypes();
+		if (registered.length === 0) {
+			console.log(chalk.red("No agents are registered on this machine."));
+			console.log(chalk.gray("Run `clawdi setup` first."));
+			return [];
+		}
+		return registered;
+	}
+
+	const adapter = await selectAdapter(agentOpt);
+	return adapter ? [adapter.agentType] : [];
+}

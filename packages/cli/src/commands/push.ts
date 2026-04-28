@@ -1,14 +1,23 @@
+import { homedir } from "node:os";
+import { resolve as resolvePath } from "node:path";
 import * as p from "@clack/prompts";
 import chalk from "chalk";
-import type { RawSession, RawSkill } from "../adapters/base";
+import type { AgentAdapter, RawSession, RawSkill } from "../adapters/base";
 import { adapterRegistry } from "../adapters/registry";
 import { ApiClient, ApiError, unwrap } from "../lib/api-client";
 import { isLoggedIn } from "../lib/config";
 import { errMessage } from "../lib/errors";
 import { askMulti, askYesNo, parseModules } from "../lib/prompts";
-import { getEnvIdByAgent, selectAdapter } from "../lib/select-adapter";
-import { readModuleState, writeModuleState } from "../lib/state";
+import { adapterForType, getEnvIdByAgent, resolveTargetAgentTypes } from "../lib/select-adapter";
+import {
+	type ModuleState,
+	readModuleState,
+	readSessionCursor,
+	writeModuleState,
+	writeSessionCursor,
+} from "../lib/state";
 import { tarSkillDir } from "../lib/tar";
+import { isInteractive } from "../lib/tty";
 
 const RESETUP_HINT =
 	"This machine's environment is no longer registered. Run `clawdi setup` again.";
@@ -18,14 +27,25 @@ const UP_MODULES = [
 	{ value: "skills", label: "Skills", hint: "skill directories as tar.gz" },
 ];
 
-export async function push(opts: {
+interface PushOpts {
 	modules?: string;
 	since?: string;
 	project?: string;
+	excludeProject?: string[];
 	all?: boolean;
+	allAgents?: boolean;
 	dryRun?: boolean;
 	agent?: string;
-}) {
+	yes?: boolean;
+}
+
+interface AgentPushResult {
+	sessionsPushed: number;
+	contentUploaded: number;
+	skillsPushed: number;
+}
+
+export async function push(opts: PushOpts) {
 	p.intro(chalk.bold("clawdi push"));
 
 	if (!opts.dryRun && !isLoggedIn()) {
@@ -35,53 +55,20 @@ export async function push(opts: {
 		return;
 	}
 
-	const adapter = await selectAdapter(opts.agent);
-	if (!adapter) {
+	if (opts.project && opts.excludeProject && opts.excludeProject.length > 0) {
+		p.log.error(
+			"--project and --exclude-project cannot be combined (--project is positive selection, --exclude-project is subtractive).",
+		);
 		p.outro(chalk.red("Aborted."));
 		process.exitCode = 1;
 		return;
 	}
 
-	const envId = getEnvIdByAgent(adapter.agentType);
-	if (!opts.dryRun && !envId) {
-		p.log.error("No environment registered. Run `clawdi setup` first.");
+	const targetTypes = await resolveTargetAgentTypes(opts.agent, !!opts.allAgents);
+	if (targetTypes.length === 0) {
 		p.outro(chalk.red("Aborted."));
 		process.exitCode = 1;
 		return;
-	}
-
-	// Probe the cached env_id before doing any local work. The CLI keeps a
-	// per-agent file under ~/.clawdi/environments/, but the corresponding row
-	// can disappear server-side (account switch, prod reset, env teardown).
-	// Catching that here means the user runs `clawdi setup` once and is back
-	// in business — instead of pushing 60 sessions that all show up as
-	// "Unknown" in the dashboard.
-	if (!opts.dryRun && envId) {
-		const probe = new ApiClient();
-		try {
-			const res = await probe.GET("/api/environments/{environment_id}", {
-				params: { path: { environment_id: envId } },
-			});
-			if (res.error || !res.data) {
-				const status = res.response?.status ?? 0;
-				if (status === 404) {
-					p.log.error(RESETUP_HINT);
-					p.outro(chalk.red("Aborted."));
-					process.exitCode = 1;
-					return;
-				}
-				// Anything else (401, network, 5xx) — let the actual upload bubble
-				// up the proper error; don't double-report here.
-			}
-		} catch (e) {
-			if (e instanceof ApiError && e.status === 404) {
-				p.log.error(RESETUP_HINT);
-				p.outro(chalk.red("Aborted."));
-				process.exitCode = 1;
-				return;
-			}
-			// Same reasoning as above — fall through and let upload surface it.
-		}
 	}
 
 	let modules: string[];
@@ -102,22 +89,113 @@ export async function push(opts: {
 		return;
 	}
 
-	p.log.info(`Agent:   ${adapterRegistry[adapter.agentType].displayName}`);
-	p.log.info(`Modules: ${modules.join(", ")}`);
+	if (targetTypes.length > 1) {
+		p.log.info(`Targets: ${targetTypes.map((t) => adapterRegistry[t].displayName).join(", ")}`);
+	}
 
-	// 2. Scan data
 	const moduleState = readModuleState();
-	const sinceSource: "flag" | "state" | "none" = opts.since
-		? "flag"
-		: moduleState.sessions?.lastActivityAt
-			? "state"
-			: "none";
-	const since = opts.since
-		? new Date(opts.since)
-		: moduleState.sessions?.lastActivityAt
-			? new Date(moduleState.sessions.lastActivityAt)
-			: undefined;
+	const totals = { sessions: 0, content: 0, skills: 0 };
+	let aborted = false;
+
+	for (const agentType of targetTypes) {
+		const adapter = adapterForType(agentType);
+		if (!adapter) continue;
+		if (targetTypes.length > 1) {
+			p.log.step(chalk.bold(`▶ ${adapterRegistry[agentType].displayName}`));
+		}
+		const result = await pushOneAgent(adapter, modules, opts, moduleState);
+		if (result === "aborted") {
+			aborted = true;
+			break;
+		}
+		if (result === "skipped") continue;
+		totals.sessions += result.sessionsPushed;
+		totals.content += result.contentUploaded;
+		totals.skills += result.skillsPushed;
+	}
+
+	if (!opts.dryRun) writeModuleState(moduleState);
+
+	if (aborted) {
+		p.outro(chalk.red("Aborted."));
+		process.exitCode = 1;
+		return;
+	}
+
+	if (opts.dryRun) {
+		p.outro(chalk.gray("Dry run complete."));
+		return;
+	}
+
+	const parts: string[] = [];
+	if (modules.includes("sessions")) {
+		parts.push(`${totals.sessions} session${totals.sessions === 1 ? "" : "s"}`);
+		parts.push(`${totals.content} content blob${totals.content === 1 ? "" : "s"}`);
+	}
+	if (modules.includes("skills")) {
+		parts.push(`${totals.skills} skill${totals.skills === 1 ? "" : "s"}`);
+	}
+	parts.push(`across ${targetTypes.length} agent${targetTypes.length === 1 ? "" : "s"}`);
+	p.outro(chalk.green(`✓ Push complete — ${parts.join(", ")}`));
+}
+
+async function pushOneAgent(
+	adapter: AgentAdapter,
+	modules: string[],
+	opts: PushOpts,
+	moduleState: ModuleState,
+): Promise<AgentPushResult | "aborted" | "skipped"> {
+	const agentType = adapter.agentType;
+	const envId = getEnvIdByAgent(agentType);
+
+	if (!opts.dryRun && !envId) {
+		p.log.error(
+			`No environment registered for ${adapterRegistry[agentType].displayName}. Run \`clawdi setup\` first.`,
+		);
+		return "aborted";
+	}
+
+	// Probe the cached env_id before doing any local work. The CLI keeps a
+	// per-agent file under ~/.clawdi/environments/, but the corresponding row
+	// can disappear server-side (account switch, prod reset, env teardown).
+	// Catching that here means the user runs `clawdi setup` once and is back
+	// in business — instead of pushing 60 sessions that all show up as
+	// "Unknown" in the dashboard.
+	if (!opts.dryRun && envId) {
+		const probe = new ApiClient();
+		try {
+			const res = await probe.GET("/api/environments/{environment_id}", {
+				params: { path: { environment_id: envId } },
+			});
+			if (res.error || !res.data) {
+				const status = res.response?.status ?? 0;
+				if (status === 404) {
+					p.log.error(RESETUP_HINT);
+					return "aborted";
+				}
+				// Anything else (401, network, 5xx) — let the actual upload bubble
+				// up the proper error; don't double-report here.
+			}
+		} catch (e) {
+			if (e instanceof ApiError && e.status === 404) {
+				p.log.error(RESETUP_HINT);
+				return "aborted";
+			}
+			// Same reasoning as above — fall through and let upload surface it.
+		}
+	}
+
+	const cursorStr = readSessionCursor(moduleState, agentType);
+	const sinceSource: "flag" | "state" | "none" = opts.since ? "flag" : cursorStr ? "state" : "none";
+	const since = opts.since ? new Date(opts.since) : cursorStr ? new Date(cursorStr) : undefined;
+
+	// Project filter: explicit --all wins, then explicit --project, else cwd.
+	const usedCwdDefault = !opts.all && !opts.project;
 	const projectFilter = opts.all ? undefined : (opts.project ?? process.cwd());
+
+	const excludeSet = new Set<string>(
+		(opts.excludeProject ?? []).map((path) => normalizeProject(path)),
+	);
 
 	if (modules.includes("sessions")) {
 		const scope = projectFilter ? `project ${projectFilter}` : "all projects";
@@ -127,11 +205,7 @@ export async function push(opts: {
 		p.log.info(chalk.gray(`Scanning ${scope}, ${sinceLabel}`));
 	}
 
-	if (
-		adapter.agentType === "hermes" &&
-		modules.includes("sessions") &&
-		projectFilter !== undefined
-	) {
+	if (agentType === "hermes" && modules.includes("sessions") && projectFilter !== undefined) {
 		p.log.warn("Hermes does not support project filtering; pushing all sessions.");
 		p.log.info("Use --all to suppress this notice.");
 	}
@@ -151,15 +225,53 @@ export async function push(opts: {
 		`Scanned ${sessions.length} session${sessions.length === 1 ? "" : "s"}, ${skills.length} skill${skills.length === 1 ? "" : "s"}`,
 	);
 
-	// 3. Summary
-	if (modules.includes("sessions")) {
-		p.log.message(chalk.gray(`Sessions: ${sessions.length} to upload`));
-		if (sessions.length === 0 && projectFilter) {
+	// Apply --exclude-project after scan. Exact-equality match on normalized
+	// absolute paths — `~/work` does NOT exclude `~/work/foo` (users say what
+	// they mean; prefix-match would silently drop sibling repos).
+	if (excludeSet.size > 0 && sessions.length > 0) {
+		const before = sessions.length;
+		const matchedExcludes = new Set<string>();
+		sessions = sessions.filter((s) => {
+			if (!s.projectPath) return true;
+			const normalized = normalizeProject(s.projectPath);
+			if (excludeSet.has(normalized)) {
+				matchedExcludes.add(normalized);
+				return false;
+			}
+			return true;
+		});
+		const removed = before - sessions.length;
+		if (removed > 0) {
 			p.log.info(
 				chalk.gray(
-					"No sessions matched. Try --all to scan every project, or --since <date> to override the last-push cutoff.",
+					`Excluded ${removed} session${removed === 1 ? "" : "s"} from ${matchedExcludes.size} project${matchedExcludes.size === 1 ? "" : "s"}`,
 				),
 			);
+		}
+		for (const requested of excludeSet) {
+			if (!matchedExcludes.has(requested)) {
+				p.log.warn(`--exclude-project ${requested} did not match any local sessions; ignoring`);
+			}
+		}
+	}
+
+	if (modules.includes("sessions")) {
+		p.log.message(chalk.gray(`Sessions: ${sessions.length} to upload`));
+		if (sessions.length === 0) {
+			const isFirstRun = !readSessionCursor(moduleState, agentType);
+			if (usedCwdDefault && isFirstRun && !isInteractive()) {
+				p.log.info(
+					chalk.gray(
+						`No sessions matched in ${process.cwd()}. This looks like a first run — re-run with --all to scan every project, or pass --project <abs-path> if your sessions live elsewhere.`,
+					),
+				);
+			} else if (projectFilter) {
+				p.log.info(
+					chalk.gray(
+						"No sessions matched. Try --all to scan every project, or --since <date> to override the last-push cutoff.",
+					),
+				);
+			}
 		}
 	}
 	if (modules.includes("skills")) {
@@ -167,28 +279,40 @@ export async function push(opts: {
 	}
 
 	if (sessions.length === 0 && skills.length === 0) {
-		p.outro(chalk.gray("Nothing to push."));
-		return;
+		if (excludeSet.size > 0 && modules.includes("sessions")) {
+			p.log.message(chalk.gray("Nothing left to push after exclusions."));
+		}
+		return "skipped";
 	}
 
-	// 4. Confirm
 	if (opts.dryRun) {
-		p.outro(chalk.gray("Dry run complete."));
-		return;
-	}
-	const ok = await askYesNo("Proceed with upload?");
-	if (!ok) {
-		p.outro(chalk.gray("Cancelled."));
-		return;
+		return {
+			sessionsPushed: sessions.length,
+			contentUploaded: sessions.length,
+			skillsPushed: skills.length,
+		};
 	}
 
-	// 5. Execute — `envId` was guarded against null up-front, but the narrowing
-	// is gone by now. Re-check so TS can forward it into the batch body.
+	// `--yes` skips the confirmation. `askYesNo` already returns true in
+	// non-interactive contexts (CI / agent), so explicit `--yes` is mostly
+	// a no-op in those, but keeps the skill's command line self-documenting.
+	if (!opts.yes) {
+		const ok = await askYesNo("Proceed with upload?");
+		if (!ok) {
+			p.log.info(chalk.gray("Cancelled."));
+			return "skipped";
+		}
+	}
+
 	if (!envId) {
 		p.log.error("Environment id missing — rerun `clawdi setup`.");
-		return;
+		return "aborted";
 	}
+
 	const api = new ApiClient();
+	let sessionsPushed = 0;
+	let contentUploaded = 0;
+	let skillsPushed = 0;
 
 	if (sessions.length > 0) {
 		const sessionSpinner = p.spinner();
@@ -219,18 +343,20 @@ export async function push(opts: {
 				}),
 			);
 			sessionSpinner.stop(`Pushed ${result.synced} session${result.synced === 1 ? "" : "s"}`);
+			sessionsPushed = result.synced;
 
 			if (result.synced > 0) {
 				const contentSpinner = p.spinner();
 				contentSpinner.start("Uploading session content...");
-				let uploaded = 0;
 				for (const s of sessions) {
 					if (s.messages.length === 0) continue;
 					try {
 						const content = Buffer.from(JSON.stringify(s.messages), "utf-8");
 						await api.uploadSessionContent(s.localSessionId, content, `${s.localSessionId}.json`);
-						uploaded++;
-						contentSpinner.message(`Uploading session content (${uploaded}/${result.synced})...`);
+						contentUploaded++;
+						contentSpinner.message(
+							`Uploading session content (${contentUploaded}/${result.synced})...`,
+						);
 					} catch (e) {
 						// Content upload is best-effort — the session header was
 						// already committed in the batch POST above. Surface the
@@ -239,11 +365,11 @@ export async function push(opts: {
 						p.log.warn(`Content upload skipped for ${s.localSessionId}: ${errMessage(e)}`);
 					}
 				}
-				contentSpinner.stop(`Uploaded ${uploaded} session content${uploaded === 1 ? "" : "s"}`);
+				contentSpinner.stop(
+					`Uploaded ${contentUploaded} session content${contentUploaded === 1 ? "" : "s"}`,
+				);
 			}
 		} catch (e) {
-			// Stop the spinner with a plain "failed" message — handleError
-			// will render the final red error box, so we avoid double-red.
 			sessionSpinner.stop("Session upload failed.");
 			// Translate the backend's "unknown_environment" 400 into the same
 			// re-setup hint the up-front probe uses. The probe catches the
@@ -251,13 +377,11 @@ export async function push(opts: {
 			// between probe and batch.
 			if (e instanceof ApiError && e.status === 400 && e.body.includes("unknown_environment")) {
 				p.log.error(RESETUP_HINT);
-				p.outro(chalk.red("Aborted."));
-				process.exitCode = 1;
-				return;
+				return "aborted";
 			}
 			throw e;
 		}
-		moduleState.sessions = { lastActivityAt: new Date().toISOString() };
+		writeSessionCursor(moduleState, agentType, new Date().toISOString());
 	}
 
 	if (skills.length > 0) {
@@ -293,14 +417,15 @@ export async function push(opts: {
 				}
 				skillSpinner.message(`Uploading skills (${pushed + skipped.length}/${skills.length})...`);
 			}
-			const parts = [`Pushed ${pushed} skill${pushed === 1 ? "" : "s"}`];
+			const summary = [`Pushed ${pushed} skill${pushed === 1 ? "" : "s"}`];
 			if (skipped.length > 0) {
-				parts.push(`skipped ${skipped.length} (too large)`);
+				summary.push(`skipped ${skipped.length} (too large)`);
 			}
-			skillSpinner.stop(parts.join(", "));
+			skillSpinner.stop(summary.join(", "));
 			for (const s of skipped) {
 				p.log.warn(`Skipped ${s.key} — ${s.reason}`);
 			}
+			skillsPushed = pushed;
 		} catch (e) {
 			skillSpinner.stop(`Failed after ${pushed} skill${pushed === 1 ? "" : "s"}.`);
 			throw e;
@@ -308,6 +433,15 @@ export async function push(opts: {
 		moduleState.skills = { lastActivityAt: new Date().toISOString() };
 	}
 
-	writeModuleState(moduleState);
-	p.outro(chalk.green("✓ Push complete"));
+	return { sessionsPushed, contentUploaded, skillsPushed };
+}
+
+function normalizeProject(input: string): string {
+	// Expand `~` ourselves — `path.resolve` doesn't do tilde expansion, so a
+	// shell-less caller (e.g. an agent invoking the CLI directly) that passes
+	// `~/scratch` would otherwise get `<cwd>/~/scratch`, which never matches.
+	let expanded = input;
+	if (expanded === "~") expanded = homedir();
+	else if (expanded.startsWith("~/")) expanded = `${homedir()}${expanded.slice(1)}`;
+	return resolvePath(expanded);
 }

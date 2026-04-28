@@ -1,6 +1,7 @@
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import chalk from "chalk";
+import type { AgentType } from "../adapters/registry";
 import { getClawdiDir } from "./config";
 
 /**
@@ -36,4 +37,19 @@ export function readModuleState(): ModuleState {
 export function writeModuleState(state: ModuleState) {
 	const path = join(getClawdiDir(), STATE_FILE);
 	writeFileSync(path, `${JSON.stringify(state, null, 2)}\n`, { mode: 0o600 });
+}
+
+/**
+ * Per-agent session sync cursor. Earlier versions stored a single shared
+ * `sessions.lastActivityAt` across all agents — Claude Code's push would
+ * advance Codex's cursor. Now each agent's cursor lives under
+ * `sessions:<agentType>`. Reads fall back to the legacy key for users
+ * upgrading from the shared-cursor era.
+ */
+export function readSessionCursor(state: ModuleState, agentType: AgentType): string | undefined {
+	return state[`sessions:${agentType}`]?.lastActivityAt ?? state.sessions?.lastActivityAt;
+}
+
+export function writeSessionCursor(state: ModuleState, agentType: AgentType, isoTs: string) {
+	state[`sessions:${agentType}`] = { lastActivityAt: isoTs };
 }

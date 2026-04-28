@@ -15,7 +15,8 @@ program
 Examples:
   $ clawdi auth login               Authenticate with Clawdi Cloud
   $ clawdi setup                    Detect agents and register the current machine
-  $ clawdi push                     Upload local sessions/skills to the cloud
+  $ clawdi sessions list            Preview local sessions before pushing
+  $ clawdi push --modules sessions --all-agents --all  Upload everything
   $ clawdi pull                     Download cloud skills to registered agents
   $ clawdi skill list --json        Machine-readable skill listing
   $ clawdi memory search "redis"    Search memories by text
@@ -167,9 +168,17 @@ program
 	.option("--modules <modules>", "Comma-separated: sessions,skills")
 	.option("--since <date>", "Only push data modified after this date")
 	.option("--project <path>", "Push a specific project's data (default: current directory)")
+	.option(
+		"--exclude-project <path>",
+		"Exclude a project path (repeatable, mutex with --project)",
+		(value: string, prev: string[] = []) => prev.concat(value),
+		[] as string[],
+	)
 	.option("--all", "Push data from all projects")
 	.option("--agent <type>", "Target agent (claude_code, codex, hermes, openclaw)")
+	.option("--all-agents", "Push from every registered agent on this machine")
 	.option("--dry-run", "Preview without uploading")
+	.option("-y, --yes", "Skip the upload confirmation prompt")
 	.addHelpText(
 		"after",
 		`
@@ -177,7 +186,9 @@ Examples:
   $ clawdi push
   $ clawdi push --modules skills
   $ clawdi push --agent claude_code --dry-run
-  $ clawdi push --since 2026-01-01 --all`,
+  $ clawdi push --since 2026-01-01 --all
+  $ clawdi push --modules sessions --all-agents --all --yes
+  $ clawdi push --modules sessions --all-agents --all --exclude-project ~/scratch --yes`,
 	)
 	.action(async (opts) => {
 		const { push } = await import("./commands/push.js");
@@ -298,6 +309,34 @@ skillCmd
 	.action(async (name) => {
 		const { skillInit } = await import("./commands/skill.js");
 		skillInit(name);
+	});
+
+// ─────────────────────────────────────────────────────────────
+// sessions
+// ─────────────────────────────────────────────────────────────
+const sessionsCmd = program.command("sessions").description("Inspect local agent sessions");
+
+sessionsCmd
+	.command("list")
+	.description("List local agent sessions (use before `clawdi push` to preview)")
+	.option("--agent <type>", "Single agent (claude_code, codex, hermes, openclaw)")
+	.option("--all-agents", "List sessions from every registered agent (default)")
+	.option("--project <path>", "Restrict to one project path")
+	.option("--all", "List sessions from all projects (default when --project not set)")
+	.option("--since <date>", "Only list sessions started after this date")
+	.option("--limit <n>", "Cap results", "100")
+	.option("--json", "Output as JSON")
+	.addHelpText(
+		"after",
+		`
+Examples:
+  $ clawdi sessions list
+  $ clawdi sessions list --json
+  $ clawdi sessions list --agent claude_code --project ~/work/foo`,
+	)
+	.action(async (opts) => {
+		const { sessionsList } = await import("./commands/sessions.js");
+		await sessionsList(opts);
 	});
 
 // ─────────────────────────────────────────────────────────────
