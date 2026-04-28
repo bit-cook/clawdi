@@ -1,3 +1,9 @@
+# ruff: noqa: E501
+# This module contains a long-form system prompt where each line is a
+# natural-language paragraph. Hard-wrapping at 100 chars would chop
+# sentences mid-thought without changing what the model actually sees
+# (which is a single string of tokens — source line breaks don't matter
+# unless explicit `\n` characters are present).
 """LLM-driven extraction of memory entries from a session's messages.
 
 The prompt does the heavy lifting — we lean on concrete ✅/❌ examples per
