@@ -52,6 +52,21 @@ function home(): string {
 	return process.env.HOME || homedir();
 }
 
+/** Root of the clawdi state tree (auth, environments, locks,
+ * serve queue, serve logs). Honors `CLAWDI_HOME` so test harnesses
+ * + the `clawdi-dev` wrapper get isolated state. Pre-fix
+ * `installLaunchd`'s logDir hardcoded `$HOME/.clawdi`, so a
+ * `CLAWDI_HOME=/foo clawdi serve install` would bake
+ * `$HOME/.clawdi/serve/logs/...` into the plist while `serve logs`
+ * (which DID honor CLAWDI_HOME via `getServeLogPath`) looked at
+ * `/foo/serve/logs/...` — `serve logs` couldn't find the file.
+ * Codex flagged this as P2 in PR-#74 review. */
+function clawdiRoot(): string {
+	const homeOverride = process.env.CLAWDI_HOME;
+	if (homeOverride) return homeOverride;
+	return join(home(), ".clawdi");
+}
+
 function unitName(agent: string): string {
 	// launchd labels follow reverse-DNS; systemd unit names are
 	// freeform but conventionally use a slug. We use the same
@@ -178,7 +193,11 @@ function currentClawdiCommand(): string[] {
 	return [node, entry];
 }
 
-export function install(opts: InstallOpts): { unit: string; instructions: string } {
+export function install(opts: InstallOpts): {
+	unit: string;
+	instructions: string;
+	replaced: boolean;
+} {
 	const p = platform();
 	if (p === "darwin") return installLaunchd(opts);
 	if (p === "linux") return installSystemd(opts);
@@ -199,6 +218,61 @@ export function statusLines(opts: InstallOpts): string[] {
 	return [`unsupported platform: ${p}`];
 }
 
+/** Restart an already-installed daemon unit. Throws if no unit is
+ * installed (caller should install first) or if the supervisor
+ * refuses to restart (corrupt unit, permissions, etc). */
+export function restart(opts: InstallOpts): void {
+	const p = platform();
+	if (p === "darwin") {
+		restartLaunchd(opts);
+	} else if (p === "linux") {
+		restartSystemd(opts);
+	} else {
+		throw new Error(`unsupported platform for service restart: ${p}`);
+	}
+}
+
+function restartLaunchd(opts: InstallOpts): void {
+	const path = plistPath(opts.agent);
+	if (!existsSync(path)) {
+		throw new Error(
+			`no daemon unit installed for ${opts.agent} ` +
+				`(run \`clawdi serve install --agent ${opts.agent}\` first)`,
+		);
+	}
+	const label = unitName(opts.agent);
+	const target = `gui/${process.getuid?.() ?? 501}/${label}`;
+	// Two restart shapes depending on launchd's view of the unit:
+	//   - Loaded: hot restart via `kickstart -k` (kills the running
+	//     job and lets launchd respawn it; preserves the unit's
+	//     OnDemand/KeepAlive policies).
+	//   - Unloaded but plist exists (launchd auto-ejected after
+	//     enough crash-loop exits, or user manually `bootout`'d
+	//     without removing the file): cold reload via unload+load.
+	// Pre-fix `restart` always tried kickstart and gave up with a
+	// "kickstart failed" error when the unit was ejected — the user
+	// then had to manually `launchctl load -w <path>` themselves.
+	const isLoaded = tryRunCapture(["launchctl", "list", label]) !== null;
+	if (isLoaded && tryRun(["launchctl", "kickstart", "-k", target])) return;
+	tryRun(["launchctl", "unload", path]);
+	if (!tryRun(["launchctl", "load", "-w", path])) {
+		throw new Error(
+			`launchctl could not (re)load ${label}. ` + `Try manually: launchctl load -w "${path}"`,
+		);
+	}
+}
+
+function restartSystemd(opts: InstallOpts): void {
+	const unit = `clawdi-serve-${opts.agent}.service`;
+	const ok = tryRun(["systemctl", "--user", "restart", unit]);
+	if (!ok) {
+		throw new Error(
+			`systemctl --user restart ${unit} failed. ` +
+				`Check \`systemctl --user status ${unit}\` for details.`,
+		);
+	}
+}
+
 // ---------------------------------------------------------------------------
 // macOS / launchd
 // ---------------------------------------------------------------------------
@@ -213,11 +287,15 @@ function plistPath(agent: string): string {
 	return join(launchAgentsDir(), `${unitName(agent)}.plist`);
 }
 
-function installLaunchd(opts: InstallOpts): { unit: string; instructions: string } {
+function installLaunchd(opts: InstallOpts): {
+	unit: string;
+	instructions: string;
+	replaced: boolean;
+} {
 	validateEnvironmentId(opts.environmentId);
 	const label = unitName(opts.agent);
 	const [node, entry] = currentClawdiCommand();
-	const logDir = join(home(), ".clawdi", "serve", "logs");
+	const logDir = join(clawdiRoot(), "serve", "logs");
 	if (!existsSync(logDir)) mkdirSync(logDir, { recursive: true });
 
 	// `KeepAlive=true` so launchd respawns on crash. `RunAtLoad`
@@ -274,6 +352,10 @@ function installLaunchd(opts: InstallOpts): { unit: string; instructions: string
 `;
 
 	const path = plistPath(opts.agent);
+	// Sample BEFORE we writeFileSync — caller wants to know
+	// whether this install was a fresh write or replacing an
+	// existing unit.
+	const replaced = existsSync(path);
 	// 0600: the plist body inlines `CLAWDI_AUTH_TOKEN` and any
 	// other captured shell env vars under `<key>EnvironmentVariables</key>`.
 	// World-readable mode would let any other local user on a
@@ -300,13 +382,40 @@ function installLaunchd(opts: InstallOpts): { unit: string; instructions: string
 	const instructions = loaded
 		? `Loaded ${label}. Tail logs with: tail -f ${join(logDir, `${opts.agent}.stderr.log`)}`
 		: `Wrote plist to ${path}, but launchctl load failed (try: launchctl load -w "${path}").`;
-	return { unit: path, instructions };
+	return { unit: path, instructions, replaced };
 }
 
 function uninstallLaunchd(opts: InstallOpts): { removed: boolean } {
 	const path = plistPath(opts.agent);
 	if (!existsSync(path)) return { removed: false };
-	tryRun(["launchctl", "unload", path]);
+	const label = unitName(opts.agent);
+	// Stop the daemon BEFORE removing the plist. Pre-fix this used a
+	// bare `tryRun(["launchctl", "unload", path])` and ignored the
+	// return code, then `unlinkSync(path)` regardless — so a
+	// failed unload (corrupt plist, label mismatch, race) left the
+	// daemon process running while the unit file was gone, with the
+	// CLI confidently reporting "✓ Removed".
+	//
+	// macOS has two stop forms:
+	//   - `launchctl unload <path>`: legacy, works for plists under
+	//     ~/Library/LaunchAgents.
+	//   - `launchctl bootout gui/<uid>/<label>`: modern (10.10+),
+	//     works regardless of whether the plist file still exists.
+	// Try unload first; fall back to bootout. Only proceed to
+	// unlink the plist after we've confirmed the daemon is stopped
+	// (or was never loaded in the first place).
+	const wasLoaded = tryRunCapture(["launchctl", "list", label]) !== null;
+	if (wasLoaded) {
+		const stopped =
+			tryRun(["launchctl", "unload", path]) ||
+			tryRun(["launchctl", "bootout", `gui/${process.getuid?.() ?? 501}/${label}`]);
+		if (!stopped) {
+			throw new Error(
+				`Failed to stop running daemon ${label}. Try manually: ` +
+					`launchctl bootout gui/$(id -u)/${label} && rm "${path}"`,
+			);
+		}
+	}
 	unlinkSync(path);
 	return { removed: true };
 }
@@ -346,10 +455,15 @@ function unitPath(agent: string): string {
 	return join(systemdUserDir(), `clawdi-serve-${agent}.service`);
 }
 
-function installSystemd(opts: InstallOpts): { unit: string; instructions: string } {
+function installSystemd(opts: InstallOpts): {
+	unit: string;
+	instructions: string;
+	replaced: boolean;
+} {
 	validateEnvironmentId(opts.environmentId);
 	const [node, entry] = currentClawdiCommand();
 	const path = unitPath(opts.agent);
+	const replaced = existsSync(path);
 
 	// systemd `Environment="KEY=VALUE"` parses backslash + double-
 	// quote inside the value. A $HOME containing `"` could close
@@ -443,7 +557,7 @@ WantedBy=default.target
 	const instructions = enabled
 		? `Enabled and started clawdi-serve-${opts.agent}.service. Tail logs with: journalctl --user -u clawdi-serve-${opts.agent} -f`
 		: `Wrote ${path} but systemctl enable failed. Try: systemctl --user enable --now clawdi-serve-${opts.agent}.service`;
-	return { unit: path, instructions };
+	return { unit: path, instructions, replaced };
 }
 
 function uninstallSystemd(opts: InstallOpts): { removed: boolean } {
@@ -497,7 +611,14 @@ function tryRun(argv: string[]): boolean {
 
 function tryRunCapture(argv: string[]): string | null {
 	try {
-		return execFileSync(argv[0], argv.slice(1), { encoding: "utf-8" });
+		// Pipe stdout (we want it), discard stdin/stderr — pre-fix
+		// stderr leaked through, e.g. `launchctl list <label>`
+		// failing with "Could not find service ..." printed during
+		// `serve restart`'s liveness probe.
+		return execFileSync(argv[0], argv.slice(1), {
+			encoding: "utf-8",
+			stdio: ["ignore", "pipe", "ignore"],
+		});
 	} catch {
 		return null;
 	}
@@ -538,24 +659,71 @@ function shellEscape(s: string): string {
 	return `"${s.replace(/"/g, '\\"')}"`;
 }
 
+/** Scan the OS supervisor for every clawdi daemon unit installed
+ * by `clawdi serve install`, regardless of whether its agent is
+ * still registered in `~/.clawdi/environments/`. Used by callers
+ * that need to act on the actual installed surface (e.g. `serve
+ * restart --all`, `auth logout`'s warn-about-residual-daemons
+ * check) — `listRegisteredAgentTypes()` would miss daemons whose
+ * env file was deleted out from under them, leaving the unit
+ * orphaned but still running.
+ *
+ * Cheap implementation: enumerate `~/Library/LaunchAgents/` (macOS)
+ * or `~/.config/systemd/user/` (Linux) and pattern-match against
+ * the clawdi unit name shape. Skips agents not in `AGENT_TYPES` so
+ * a malicious filename can't smuggle into the iteration.
+ */
+type KnownAgent = "claude_code" | "codex" | "openclaw" | "hermes";
+export function listInstalledAgents(): KnownAgent[] {
+	const knownAgents: KnownAgent[] = ["claude_code", "codex", "openclaw", "hermes"];
+	const installed: KnownAgent[] = [];
+	for (const agent of knownAgents) {
+		const p = platform();
+		const path = p === "darwin" ? plistPath(agent) : p === "linux" ? unitPath(agent) : null;
+		if (path && existsSync(path)) installed.push(agent);
+	}
+	return installed;
+}
+
 /** Health-file age check, used by `clawdi serve status` even
  * before the unit framework reports anything. The daemon writes
- * `<state-dir>/health` after every successful heartbeat with
- * the current ISO timestamp — file mtime within ~90s means the
- * daemon is alive and reaching the cloud. */
+ * `<state-dir>/health` after every successful heartbeat as a JSON
+ * payload (`{"timestamp", "version"}`); file mtime within ~90s
+ * means the daemon is alive and reaching the cloud. The `version`
+ * field lets `serve status` flag drift after a CLI upgrade
+ * (daemon needs a restart to pick up the new bundle). Older
+ * daemons wrote a bare ISO timestamp; the parser falls back to
+ * that shape and reports `version: null`.
+ */
 export function readHealth(stateDir: string): {
 	exists: boolean;
 	ageSeconds: number | null;
 	timestamp: string | null;
+	version: string | null;
 } {
 	const p = join(stateDir, "health");
-	if (!existsSync(p)) return { exists: false, ageSeconds: null, timestamp: null };
+	if (!existsSync(p)) return { exists: false, ageSeconds: null, timestamp: null, version: null };
 	try {
 		const stat = statSync(p);
-		const ts = readFileSync(p, "utf-8").trim();
+		const raw = readFileSync(p, "utf-8").trim();
 		const age = Math.round((Date.now() - stat.mtimeMs) / 1000);
-		return { exists: true, ageSeconds: age, timestamp: ts };
+		// New JSON shape: parse and pull out fields. Old timestamp-
+		// only shape: keep `timestamp = raw`, `version = null`.
+		if (raw.startsWith("{")) {
+			try {
+				const parsed = JSON.parse(raw) as { timestamp?: string; version?: string };
+				return {
+					exists: true,
+					ageSeconds: age,
+					timestamp: parsed.timestamp ?? null,
+					version: parsed.version ?? null,
+				};
+			} catch {
+				/* fall through to legacy interpretation */
+			}
+		}
+		return { exists: true, ageSeconds: age, timestamp: raw, version: null };
 	} catch {
-		return { exists: true, ageSeconds: null, timestamp: null };
+		return { exists: true, ageSeconds: null, timestamp: null, version: null };
 	}
 }
