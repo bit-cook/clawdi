@@ -66,23 +66,29 @@ from app.services.file_store import get_file_store  # noqa: E402
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger("dedupe-resume-chains")
 
-# A predecessor must have at least this many messages — too short and a
-# coincidental prefix match becomes plausible.
-MIN_PREDECESSOR_MESSAGES = 5
+# A predecessor must have at least this many messages. The fingerprint
+# below already excludes coincidental matches via assistant output
+# variance (LLM replies are never byte-identical across independent runs),
+# but a higher floor is a free extra safety net.
+MIN_PREDECESSOR_MESSAGES = 10
 
 
 def fingerprint_messages(messages: list[dict[str, Any]]) -> list[str]:
-    """Stable per-message fingerprint based on timestamp+role+content.
+    """Stable per-message fingerprint based on role+content+model.
 
-    Includes timestamp because the CLI strips message uuids before upload —
-    without it, a user opening two independent sessions with the exact same
-    prompt sequence (e.g. running `/some-skill` twice) would have the
-    shorter session erroneously identified as a prefix of the longer one
-    and deleted. Real resume chains share message timestamps because
-    Claude Code copies the original message records into the new file;
-    independent sessions never do.
+    Does NOT include timestamp. Reasoning: timestamp was originally added
+    to guard against two independent sessions with identical prompt
+    sequences false-positiving as a resume chain. But assistant replies
+    are non-deterministic across runs — even with the exact same user
+    prompt, the second message in two independent sessions will differ
+    in some character, breaking any false-positive prefix at length 2.
+    Meanwhile, including timestamp in the fingerprint risked false
+    negatives if Claude Code's file-history-snapshot rewrites timestamps
+    on resume rather than preserving the original. Empirically (1427
+    sessions / 137 groups in production) the timestamp variant found 3
+    predecessors; without it, expect significantly more.
 
-    Includes model on assistant messages so that semantically different
+    Includes model on assistant messages so semantically different
     replies from different models don't fingerprint identically.
     """
     out: list[str] = []
@@ -90,10 +96,7 @@ def fingerprint_messages(messages: list[dict[str, Any]]) -> list[str]:
         role = m.get("role", "")
         content = m.get("content", "")
         model = m.get("model", "") if role == "assistant" else ""
-        timestamp = m.get("timestamp", "")
-        h = hashlib.sha256(
-            f"{timestamp}\x00{role}\x00{model}\x00{content}".encode()
-        ).hexdigest()
+        h = hashlib.sha256(f"{role}\x00{model}\x00{content}".encode()).hexdigest()
         out.append(h)
     return out
 
